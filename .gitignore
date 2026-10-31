@@ -1,0 +1,10 @@
+stop-press.toml
+kindle/stop-press/env.sh
+kindle/stop-press/xh
+kindle/stop-press/next-wakeup
+kindle/stop-press/cacert.pem
+server/fonts/static/
+__pycache__/
+*.pyc
+.venv/
+data/

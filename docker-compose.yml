@@ -1,0 +1,12 @@
+services:
+  stop-press:
+    build: ./server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./stop-press.toml:/config/stop-press.toml:ro
+      - stop-press-data:/data
+
+volumes:
+  stop-press-data:

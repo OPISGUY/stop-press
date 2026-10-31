@@ -1,0 +1,73 @@
+# Copy to stop-press.toml and edit. Every setting is optional; the defaults make a London paper with BBC,
+# Guardian and Al Jazeera news and no AI. Environment variables PAPER_<NAME> (e.g. PAPER_TOKEN) override [paper].
+
+[paper]
+masthead = "Stop Press"            # your paper's name, set in blackletter across the front page
+place = "London"                   # used in the weather and the front-page "edition" line
+lat = 51.507                       # weather location (Open-Meteo, no key needed)
+lon = -0.128
+tz = "Europe/London"
+# A shared secret the Kindle sends with every request. Set one if the server is reachable from the internet.
+token = ""
+# Your calendar's private iCal address (Google Calendar: Settings > the calendar > "Secret address in iCal format").
+calendar_ics_url = ""
+# Pages the sleeping Kindle shows in turn, one per refresh. Pages: front, markets, world, day, stats.
+rotation = "front,markets,front,world,front,day"
+rotate_minutes = 15
+
+# News: four sections, each any number of RSS/Atom feeds as [source name, url]. Rename them freely.
+[sections.world]
+title = "The World"
+feeds = [["BBC", "https://feeds.bbci.co.uk/news/world/rss.xml"],
+         ["Guardian", "https://www.theguardian.com/world/rss"],
+         ["Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"]]
+
+[sections.home]
+title = "Britain"
+feeds = [["BBC", "https://feeds.bbci.co.uk/news/uk/rss.xml"]]
+
+[sections.business]
+title = "Business"
+feeds = [["BBC", "https://feeds.bbci.co.uk/news/business/rss.xml"]]
+
+[sections.tech]
+title = "Technology"
+feeds = [["BBC", "https://feeds.bbci.co.uk/news/technology/rss.xml"],
+         ["Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"]]
+
+# Markets: Yahoo Finance symbols as [symbol, name, kind], kind one of index, fx, crypto, commodity.
+[markets]
+lead = "^FTSE"     # quoted in the front-page note; its open/closed state heads the Markets page
+front = ["^FTSE", "^GSPC", "^IXIC", "GBPUSD=X", "BTC-USD", "GC=F", "BZ=F"]
+instruments = [
+  ["^FTSE", "FTSE 100", "index"], ["^GSPC", "S&P 500", "index"], ["^IXIC", "Nasdaq", "index"],
+  ["^N225", "Nikkei 225", "index"], ["^GDAXI", "DAX", "index"], ["GBPUSD=X", "GBP/USD", "fx"],
+  ["GBPEUR=X", "GBP/EUR", "fx"], ["BTC-USD", "Bitcoin", "crypto"], ["GC=F", "Gold", "commodity"],
+  ["BZ=F", "Brent crude", "commodity"], ["^VIX", "VIX (fear)", "index"],
+]
+
+# Your own numbers: the "Numbers" page and the front page's "At a glance" box, each with a 30-day trend the
+# server builds from daily readings. Any URL that returns JSON, and the dotted path to the figure in it.
+# [[stats]]
+# label = "GitHub stars"
+# url = "https://api.github.com/repos/you/your-project"
+# path = "stargazers_count"
+# note = "your-project on GitHub"
+#
+# [[stats]]
+# label = "Living room"
+# url = "http://homeassistant.local:8123/api/states/sensor.living_room_temperature"
+# headers = { Authorization = "Bearer YOUR_HA_TOKEN" }
+# path = "state"
+# unit = "°C"
+
+# Optional: a two-sentence editor's note at the top of the front page, written by an AI model from the day's
+# headlines, markets and weather. Off unless base_url and model are set; without it the note is a plain
+# sentence built from the same facts. Works with anything that speaks the OpenAI chat API:
+#   Ollama (local, free):  base_url = "http://host.docker.internal:11434/v1"   model = "llama3.2"
+#   OpenAI:                base_url = "https://api.openai.com/v1"               model = "gpt-4o-mini"
+#   OpenRouter, LM Studio, vLLM, Groq... the same way.
+[ai]
+base_url = ""
+api_key = ""
+model = ""

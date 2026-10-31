@@ -1,0 +1,23 @@
+{
+	"items": [
+	{
+		"name": "Stop Press",
+		"priority": -999,
+		"items": [
+		{
+			"name": "Start the paper",
+			"priority": 1,
+			"action": "/mnt/us/stop-press/paper-start.sh"
+		},
+		{
+			"name": "Get today's edition now",
+			"priority": 2,
+			"action": "sh /mnt/us/stop-press/edition-now.sh",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Edition downloaded (see your library)"
+		}
+		]
+	}
+	]
+}
