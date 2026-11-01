@@ -16,10 +16,10 @@ from PIL import ImageDraw
 from paper import archive, photos
 from paper.config import SETTINGS as S
 from paper.draw import DARK, INK, M, MID, READ, H, W, Page, font
-from paper.pages import PAGES, TITLES, ago, header, now, page_for
+from paper.pages import ORDER, PAGES, TITLES, ago, header, now, page_for
 
 log = logging.getLogger(__name__)
-VIEWS = ["front", "world", "markets"] + (["stats"] if S.stats else []) + ["day", "index"]
+VIEWS = ORDER + ["index"]
 TITLES = {**TITLES, "index": "Today's Articles"}
 INDEX_PER_PAGE = 8
 # Article body sizes (font px, leading); the 5-way left/right steps through them

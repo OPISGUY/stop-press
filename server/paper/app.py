@@ -11,7 +11,7 @@ from datetime import date
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 
-from paper import archive, edition, history, pages, periodical, sources
+from paper import archive, edition, history, offline, pages, periodical, sources
 from paper.config import SETTINGS as S
 from paper.pages import PAGES, now, page_for
 
@@ -125,6 +125,22 @@ def edition_mobi(t: str = Query(""), day: str = Query("")):
         log.exception("periodical build failed")
         raise HTTPException(status_code=503, detail=str(e)[:1500])
     return Response(data, media_type="application/x-mobipocket-ebook", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/offline.tar")
+def offline_tar(t: str = Query("")):
+    """The paper as a book of screens, for reading when the Kindle can't reach us (see offline.py)."""
+    _check(t)
+    return Response(offline.tar(), media_type="application/x-tar", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/bookpos")
+def bookpos(t: str = Query("")):
+    """Which page of the offline copy matches the screen the reader is on now."""
+    _check(t)
+    from paper import ui
+
+    return Response(f"{offline.position(ui._state)}\n", media_type="text/plain", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/healthz")

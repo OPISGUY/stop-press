@@ -23,8 +23,11 @@ one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
   readable after it drops off the front page. Ticks mark what you've read, and the index offers "Continue reading".
 - **Daily edition:** a real Kindle periodical (`.mobi`, built with Calibre), with sections, an article list and
   adjustable fonts. It downloads hourly and keeps two weeks.
-- **Sleeps properly:** after 3 minutes, or a press of the power button, it shows the next scheduled page and suspends.
-  It wakes every 15 minutes to refresh. A charge lasts weeks. Overnight it shows a "gone to press" screen.
+- **Works out of Wi-Fi range:** every hour it downloads the whole paper (sections plus full articles, about 4 MB) as
+  a saved copy. If the Wi-Fi drops, the keys carry on through that copy from the page you were on. Home reconnects.
+- **Sleeps properly:** after 3 minutes, or a press of the power button, it shows the front page and suspends.
+  It wakes every hour to refresh. A charge lasts weeks. Overnight it shows a "gone to press" screen.
+- **Boots into the paper** if you want it to (KUAL → Stop Press → Start at boot: on).
 - **Yours to configure:** masthead, town, any RSS feeds, markets, your calendar, and your own numbers (any JSON URL)
   with trend lines.
 - **No accounts, no API keys** for the defaults: Open-Meteo for weather, the Yahoo Finance chart endpoint for markets,
@@ -50,7 +53,8 @@ docker compose up -d --build
 ```
 
 Open `http://<server>:8000/kindle.png` in a browser to see the front page. Other addresses:
-`/page/markets.png`, `/page/world.png`, `/page/day.png`, `/page/stats.png`, and the edition at `/edition.mobi`.
+`/page/markets.png`, `/page/world.png`, `/page/day.png`, `/page/stats.png`, the edition at `/edition.mobi`, and the
+offline copy at `/offline.tar`.
 
 If you set a `token` (do this if the server is reachable from the internet), add `?t=<token>` to every address.
 To put it on the internet, run it behind any HTTPS reverse proxy (Caddy, Cloudflare Tunnel, Tailscale Funnel)
@@ -78,9 +82,28 @@ everything else still works.
    - `kindle/stop-press/` → `/mnt/us/stop-press/` (the `stop-press` folder in the drive's root)
    - `kindle/extensions/stop-press/` → `/mnt/us/extensions/stop-press/`
 5. Eject, then **KUAL → Stop Press → Start the paper.**
+6. Optional: **KUAL → Stop Press → Start at boot: on** makes the Kindle open the paper by itself about a minute after
+   it switches on. This adds a small start-up script to the Kindle's system partition. **Start at boot: off** removes
+   it, and a file called `NO_AUTOSTART` in the `stop-press` folder skips it for as long as the file is there.
 
 Press the **keyboard key** to return to the normal Kindle library, and use KUAL → Stop Press to start the paper again.
 To recover a stuck device, hold power for about 20 seconds.
+
+## Reading out of Wi-Fi range
+
+Old Kindles have weak Wi-Fi, so the paper keeps a saved copy. At each hourly refresh the Kindle downloads
+`/offline.tar`: the sections and up to 24 full articles, each screen as a PNG, in reading order. When a page can't be
+fetched, `paper.sh` switches to that copy. It starts at the page you were on, and the footer says "Saved copy from
+14:00".
+
+| Button | In the saved copy |
+|---|---|
+| Page keys, 5-way left / right / press | next / previous screen |
+| 5-way up / down, Back | previous / next story or section |
+| Menu | front page |
+| Home | try the server again (front page of the saved copy if it's still out of reach) |
+
+The next time it wakes in range, it goes back to the live paper.
 
 ## Controls
 
@@ -93,7 +116,7 @@ To recover a stuck device, hold power for about 20 seconds.
 | Back | all of today's articles | back to the page |
 | Home | front page | front page |
 | Menu | all of today's articles | all articles |
-| Power | sleep (refreshes every 15 min; power wakes it straight into the paper) | same |
+| Power | sleep (refreshes hourly; power wakes it straight into the paper) | same |
 | Keyboard key | back to the normal Kindle library | same |
 
 ## AI: what it does and doesn't do
@@ -126,8 +149,10 @@ Kindle 4 (paper.sh)                         server (FastAPI + Pillow, one contai
   key press ──► GET /ui.png?k=next&b=81 ──►  apply the press to the reader state, render 600×800 greyscale PNG
   eips -g screen.png ◄──────────────────────  (≈30 ms; renders cached; feeds cached and refreshed in the background)
   while you read: GET /ui.png?k=next&peek=1  draw the likely next screens without applying them
-  asleep: GET /kindle.png every 15 min       whichever page the rotation says is due
+  asleep: GET /ui.png?k=auto hourly          the front page (or your rotation)
   hourly: GET /edition.mobi                  Calibre periodical of everything filed today
+  hourly: GET /offline.tar                   every screen of the paper as PNGs, for reading out of Wi-Fi range
+  while you read: GET /bookpos               which page of the saved copy you're on
 ```
 
 - `server/paper/pages.py` draws the pages, `ui.py` handles the interactive state and article layout, and

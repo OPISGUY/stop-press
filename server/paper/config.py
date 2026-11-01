@@ -80,8 +80,8 @@ class Settings:
     ai_model: str = field(default_factory=lambda: os.environ.get("AI_MODEL") or FILE.get("ai", {}).get("model", ""))
 
     # Pages the Kindle steps through while asleep, one per refresh. The front page comes round every other time.
-    rotation: tuple = field(default_factory=lambda: tuple(str(_get("rotation", "front,markets,front,world,front,day")).split(",")))
-    rotate_minutes: int = field(default_factory=lambda: int(_get("rotate_minutes", 15)))  # matches the Kindle's refresh
+    rotation: tuple = field(default_factory=lambda: tuple(str(_get("rotation", "front")).split(",")))
+    rotate_minutes: int = field(default_factory=lambda: int(_get("rotate_minutes", 60)))  # matches the Kindle's refresh
 
 
 SETTINGS = Settings()

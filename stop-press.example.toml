@@ -11,9 +11,10 @@ tz = "Europe/London"
 token = ""
 # Your calendar's private iCal address (Google Calendar: Settings > the calendar > "Secret address in iCal format").
 calendar_ics_url = ""
-# Pages the sleeping Kindle shows in turn, one per refresh. Pages: front, markets, world, day, stats.
-rotation = "front,markets,front,world,front,day"
-rotate_minutes = 15
+# Pages the sleeping Kindle shows in turn, one per refresh (match rotate_minutes to REFRESH_SCHEDULE in env.sh).
+# Pages: front, markets, world, day, stats. For example "front,markets,front,world" with rotate_minutes = 15.
+rotation = "front"
+rotate_minutes = 60
 
 # News: four sections, each any number of RSS/Atom feeds as [source name, url]. Rename them freely.
 [sections.world]

@@ -1,23 +1,39 @@
 {
 	"items": [
-	{
-		"name": "Stop Press",
-		"priority": -999,
-		"items": [
 		{
-			"name": "Start the paper",
-			"priority": 1,
-			"action": "/mnt/us/stop-press/paper-start.sh"
-		},
-		{
-			"name": "Get today's edition now",
-			"priority": 2,
-			"action": "sh /mnt/us/stop-press/edition-now.sh",
-			"exitmenu": false,
-			"status": false,
-			"internal": "status Edition downloaded (see your library)"
+			"name": "Stop Press",
+			"priority": -999,
+			"items": [
+				{
+					"name": "Start the paper",
+					"priority": 1,
+					"action": "/mnt/us/stop-press/paper-start.sh"
+				},
+				{
+					"name": "Get today's edition now",
+					"priority": 2,
+					"action": "sh /mnt/us/stop-press/edition-now.sh",
+					"exitmenu": false,
+					"status": false,
+					"internal": "status Edition downloaded (see your library)"
+				},
+				{
+					"name": "Start at boot: on",
+					"priority": 3,
+					"action": "sh /mnt/us/stop-press/autostart.sh on",
+					"exitmenu": false,
+					"status": false,
+					"internal": "status Stop Press will start at boot"
+				},
+				{
+					"name": "Start at boot: off",
+					"priority": 4,
+					"action": "sh /mnt/us/stop-press/autostart.sh off",
+					"exitmenu": false,
+					"status": false,
+					"internal": "status Stop Press won't start at boot"
+				}
+			]
 		}
-		]
-	}
 	]
 }

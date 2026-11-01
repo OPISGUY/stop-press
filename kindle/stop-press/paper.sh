@@ -2,8 +2,10 @@
 # Stop Press on the Kindle 4.
 #   Awake:  the page keys, 5-way, Home, Menu and Back drive the paper (the server keeps the state; we just
 #           forward each press to /ui.png and draw what comes back).
-#   Asleep: after the power button, or 3 minutes without a press, the Kindle shows the scheduled page,
-#           suspends, and wakes every 15 minutes to refresh. The power button wakes it straight into the paper.
+#   Asleep: after the power button, or 3 minutes without a press, the Kindle shows the front page (or your
+#           rotation), suspends, and wakes on REFRESH_SCHEDULE (hourly by default) to refresh. The power button wakes it straight into the paper.
+#   Offline: each hour it also downloads the paper as a book of screens (/offline.tar). When the server can't be
+#           reached (the Wi-Fi drops as soon as you leave the room) the keys flip through that copy instead.
 #   The keyboard key hands the Kindle back to its normal library.
 DIR=/mnt/us/stop-press
 . "$DIR/env.sh"
@@ -14,13 +16,15 @@ RTC=/sys/devices/platform/mxc_rtc.0/wakeup_enable
 FIFO=/tmp/paper.fifo
 IDLE=180
 UI=$(echo "$DASH_URL" | sed 's#/kindle\.png#/ui.png#')
+BOOK="$DIR/offline"
+OFFLINE=0
 export TZ="${POSIX_TZ:-UTC0}" # the Kindle clock is UTC; this names editions by your local date
 
 log() { echo "$(date '+%F %T') $*"; }
 
 # Ask the server for the screen after key $1 into file $2 ($3: extra query, e.g. &peek=1). Sends the battery level.
 fetch() {
-  "$XH" -d -q --timeout 30 --verify "$CA" -o "$2.part" get "$UI&k=$1${BATT:+&b=$BATT}$3" 2>/dev/null && mv "$2.part" "$2"
+  "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI&k=$1${BATT:+&b=$BATT}$3" 2>/dev/null && mv "$2.part" "$2"
 }
 
 draw() {
@@ -32,6 +36,9 @@ prefetch() {
   for k in next down prev up; do
     fetch "$k" "/tmp/pre.$k.png" "&peek=1" || return
   done
+  # Where this screen is in the offline copy, so losing Wi-Fi carries on from here.
+  "$XH" -d -q --timeout 12 --verify "$CA" -o /tmp/bookpos.part get "$(echo "$DASH_URL" | sed 's#/kindle\.png#/bookpos#')" 2>/dev/null &&
+    mv /tmp/bookpos.part /tmp/bookpos
 }
 
 stop_prefetch() {
@@ -53,7 +60,11 @@ show() {
   else
     log "fetch failed for $1"
     rm -f /tmp/pre.*.png
-    $EIPS 1 39 "  No connection - will retry  "
+    if [ -s "$BOOK/p001.png" ]; then
+      go_offline "$1"
+    else
+      $EIPS 1 39 "  No connection - will retry  "
+    fi
     return 1
   fi
   rm -f /tmp/pre.*.png
@@ -61,6 +72,77 @@ show() {
     prefetch &
     PREFETCH=$!
   fi
+}
+
+# --- the offline copy -----------------------------------------------------------------------------
+
+# Download a fresh copy, at most hourly, into $BOOK. It's unpacked beside the old one and swapped in whole.
+fetch_offline() {
+  stamp="$DIR/state/offline-fetched"
+  now=$(date +%s)
+  last=$(cat "$stamp" 2>/dev/null || echo 0)
+  [ $((now - last)) -ge 3000 ] || return 0
+  url=$(echo "$DASH_URL" | sed 's#/kindle\.png#/offline.tar#')
+  tar="$DIR/offline.tar"
+  if "$XH" -d -q --timeout 180 --verify "$CA" -o "$tar.part" get "$url" 2>/dev/null; then
+    rm -rf "$BOOK.new"
+    mkdir -p "$BOOK.new"
+    if tar -xf "$tar.part" -C "$BOOK.new" && [ -s "$BOOK.new/pages.txt" ]; then
+      rm -rf "$BOOK"
+      mv "$BOOK.new" "$BOOK"
+      echo "$now" >"$stamp"
+      log "offline copy saved ($(cat "$BOOK/pages.txt") pages)"
+    else
+      log "offline copy didn't unpack"
+    fi
+  fi
+  rm -rf "$tar.part" "$BOOK.new"
+}
+
+offline_draw() {
+  $EIPS -f -g "$BOOK/$(printf 'p%03d.png' "$OPAGE")"
+}
+
+# Switch to the offline copy at the page matching where we were ($1: the key that failed; home and the sleep
+# refresh go to the front page).
+go_offline() {
+  log "offline"
+  OFFLINE=1
+  OPAGE=$(cat /tmp/bookpos 2>/dev/null)
+  case "$1" in home | auto | menu) OPAGE=1 ;; esac
+  [ -s "$BOOK/$(printf 'p%03d.png' "${OPAGE:-1}" 2>/dev/null)" ] || OPAGE=1
+  offline_draw
+}
+
+# One key while offline. Page keys turn pages; up/down jump to the next or previous story.
+offline_key() {
+  last=$(cat "$BOOK/pages.txt")
+  case "$1" in
+    next | right | select) [ "$OPAGE" -lt "$last" ] && OPAGE=$((OPAGE + 1)) ;;
+    prev | left) [ "$OPAGE" -gt 1 ] && OPAGE=$((OPAGE - 1)) ;;
+    down)
+      while read -r c; do
+        if [ "$c" -gt "$OPAGE" ]; then OPAGE=$c; break; fi
+      done <"$BOOK/chapters.txt" ;;
+    up | back)
+      to=1
+      while read -r c; do
+        [ "$c" -lt "$OPAGE" ] && to=$c
+      done <"$BOOK/chapters.txt"
+      OPAGE=$to ;;
+    menu) OPAGE=1 ;;
+  esac
+  offline_draw
+}
+
+# A key press, online or off. Home always tries the server again first.
+press() {
+  if [ "$OFFLINE" = 1 ] && [ "$1" != home ]; then
+    offline_key "$1"
+    return
+  fi
+  OFFLINE=0
+  show "$@"
 }
 
 # Every input event is 16 bytes: seconds, microseconds, type, code, value. Key presses are type 1, value 1.
@@ -107,7 +189,13 @@ interactive() {
   log "awake"
   entered=$(date +%s)
   $EIPS 1 39 "  Waking up - one moment...  "
-  "$DIR/wait-for-wifi.sh" "$WIFI_TEST_IP" >/dev/null 2>&1 # after a suspend Wi-Fi takes a few seconds
+  OFFLINE=0
+  # After a suspend Wi-Fi takes a few seconds. Out of range, give up sooner and use the offline copy.
+  n=0
+  until ping -c 1 "$WIFI_TEST_IP" >/dev/null 2>&1 || [ $n -ge 12 ]; do
+    n=$((n + 1))
+    sleep 1
+  done
   show none full
   ready=$(date +%s) # power presses before the page appears are impatience, not "go to sleep"
   arm_idle
@@ -127,16 +215,16 @@ interactive() {
         log "key $code"
         arm_idle
         case "$code" in
-          104 | 191) show next full ;;
-          109 | 193) show prev full ;;
-          103) show up partial ;;
-          108) show down partial ;;
-          105) show left full ;;
-          106) show right full ;;
-          194) show select full ;;
-          158) show back full ;;
-          102) show home full ;;
-          139) show menu full ;;
+          104 | 191) press next full ;;
+          109 | 193) press prev full ;;
+          103) press up partial ;;
+          108) press down partial ;;
+          105) press left full ;;
+          106) press right full ;;
+          194) press select full ;;
+          158) press back full ;;
+          102) press home full ;;
+          139) press menu full ;;
           29) exit_to_library ;;
         esac ;;
     esac
@@ -171,8 +259,10 @@ asleep() {
       $EIPS -f -g "$DIR/sleeping.png" # overnight
     else
       "$DIR/wait-for-wifi.sh" "$WIFI_TEST_IP" >/dev/null 2>&1
-      show auto full noprefetch
-      fetch_edition
+      if show auto full noprefetch; then
+        fetch_edition
+        fetch_offline
+      fi
     fi
     sleep 3 # let the screen settle
     echo 0 >$RTC

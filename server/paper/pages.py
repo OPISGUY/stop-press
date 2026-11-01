@@ -6,6 +6,8 @@ from paper.config import SETTINGS as S
 from paper.draw import DARK, INK, LIGHT, M, MID, PAPER, H, W, Page, font
 
 TITLES = {"front": "Front Page", "markets": "Markets", "world": "World", "stats": "Numbers", "day": "Your Day"}
+# The pages in the order the page keys step through them (and the footer lists them).
+ORDER = ["front", "world", "markets"] + (["stats"] if S.stats else []) + ["day"]
 # Set by app.py from what the Kindle reports with each request.
 DEVICE: dict = {"battery": None}
 
@@ -88,7 +90,7 @@ def header(p: Page, section: str) -> int:
 
 
 def footer(p: Page, page_name: str):
-    order = list(dict.fromkeys(S.rotation))
+    order = ORDER
     y = H - 20
     p.rule(y - 8, w=1)
     f, fb = font("sans", 11, 400), font("sans", 11, 700)
