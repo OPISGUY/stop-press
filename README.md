@@ -12,6 +12,12 @@ edition into your library.
 Stop Press gives a "dead" Kindle 4 a daily job instead. It started as part of a small computer-donation project
 that keeps devices out of the bin.
 
+**Try it now** on your e-reader, phone or computer, no setup:
+**[the public demo](https://ca-stop-press-demo.ashybush-ce81b9e0.uksouth.azurecontainerapps.io/)**. Tap a headline to read
+it, tap the sides to turn pages. The demo carries GOV.UK news (contains public sector information licensed under the
+[Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/)) and shows
+summaries rather than full articles. Your own server can use any feeds you like. Its settings are in `demo/`.
+
 ## Two ways to run it
 
 | | In any e-reader's browser | On a jailbroken Kindle 4 |
