@@ -1,6 +1,7 @@
 # Stop Press
 
-**A newspaper for your old Kindle.** Stop Press turns a jailbroken Kindle 4 into a broadsheet that updates itself.
+**A newspaper for your old e-reader.** Stop Press turns a jailbroken Kindle 4 into a broadsheet that updates itself,
+and runs in the web browser of most other e-readers, old phones and tablets ([Other devices](#other-devices)).
 It has a front page with a lead photo, world news, markets with 30-day sparklines, a weather and diary page, and full
 articles with their photos that you turn with the page keys. Each night it also files a proper Kindle "periodical"
 edition into your library.
@@ -39,10 +40,14 @@ one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
 
 ## What you need
 
-- A **Kindle 4** (2011, the non-touch model with a 5-way pad and page keys on both sides) on firmware 4.1.x,
-  **jailbroken**, with **KUAL** installed. Other models need the button handling in `paper.sh` adapting (see
-  [Other Kindles](#other-kindles)).
-- Somewhere to run Docker that the Kindle can reach over Wi-Fi.
+- Somewhere to run Docker that your device can reach over Wi-Fi.
+- One of these:
+  - **Any device with a web browser**, no jailbreak: other Kindles (Touch, Paperwhite, Voyage, Oasis, basic
+    Kindles) through their Experimental Browser, Kobos, Boox and other Android e-readers, old phones and tablets.
+    See [Other devices](#other-devices). Five minutes to set up.
+  - A **Kindle 4** (2011, the non-touch model with a 5-way pad and page keys on both sides) on firmware 4.1.x,
+    **jailbroken**, with **KUAL** installed, for the full version: it sleeps between refreshes, lasts weeks on a
+    charge, works out of Wi-Fi range and files a daily edition into the library.
 
 ## 1. Run the server
 
@@ -171,11 +176,38 @@ Lessons from getting the Kindle 4's buttons working, for anyone adapting it:
 - There's no `setsid` or `nohup` on the K4. `(trap '' HUP; exec sh paper.sh) &` survives KUAL closing.
 - BusyBox 1.7 ash's `read` fails when a signal arrives, so the event loop retries instead of exiting.
 
-## Other Kindles
+## Other devices
 
-The server side works with any e-reader that can show a 600×800 PNG. Other sizes need the `W`/`H` constants in
-`draw.py` changing. The device script is specific to the Kindle 4's keys (`/dev/input/event0/1` codes in `paper.sh`).
-Touch Kindles would need taps mapped to keys. Contributions welcome.
+**In a web browser (no jailbreak).** Open `http://<server>:8000/view?t=<token>` in the device's browser and
+bookmark it. The page fills the screen with the paper and sends your taps to the server:
+
+| Tap | On a page | In an article |
+|---|---|---|
+| A headline | open the article | |
+| Right two-thirds | next page | next page |
+| Left third | previous page | previous page |
+| Top strip | all of today's articles | back to the page |
+
+Arrow keys, Page Up/Down, Enter and Escape work too, for devices with keys and for desktop browsers. Left alone
+for 15 minutes, it goes back to a fresh front page.
+
+Where to find the browser:
+- **Kindle Touch, Paperwhite, Voyage, Oasis and basic touch Kindles:** the Experimental Browser (Menu → Experimental
+  Browser on older firmware, or the "Browser" item on newer). The Kindle Keyboard and Kindle 4 have one too.
+- **Kobo:** Settings → Beta features → Web browser.
+- **Boox, other Android e-readers, old phones and tablets:** any browser. On Android, "Add to home screen" makes it
+  open full screen.
+
+What you don't get in the browser: the device won't sleep between refreshes, so keep it on a charger or expect it
+to last a day or two. The screensaver may also come on, and there's no saved copy for when the Wi-Fi drops. Pages
+are drawn at 600×800 and scaled to fit, so on a large screen they're a little soft.
+
+Tested at phone size in a desktop browser. If you try it on an e-reader, please say how it went in the
+[device issue](https://github.com/OPISGUY/stop-press/issues/1), especially if something didn't work.
+
+**Native ports.** The full version (sleeping between refreshes, the saved copy, the daily edition) needs a device
+script like `kindle/stop-press/paper.sh`. It's written for the Kindle 4's keys. The plan for other models, and
+how to help, is in [the pinned issue](https://github.com/OPISGUY/stop-press/issues/1).
 
 ## Credits
 

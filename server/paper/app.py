@@ -2,14 +2,16 @@
 whichever page is due while it sleeps, and /edition.mobi?t=<token> for the day's full articles."""
 import hmac
 import io
+import json
 import logging
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 
 from paper import archive, edition, history, offline, pages, periodical, sources
 from paper.config import SETTINGS as S
@@ -78,13 +80,15 @@ def page(name: str, t: str = Query("")):
     return _png(name)
 
 
-KEYS = {"next", "prev", "up", "down", "left", "right", "select", "back", "home", "menu", "none", "auto"}
+KEYS = {"next", "prev", "up", "down", "left", "right", "select", "back", "home", "menu", "none", "auto", "tap"}
 
 
 @app.get("/ui.png")
-def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: int | None = Query(None, ge=0, le=100)):
+def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: int | None = Query(None, ge=0, le=100),
+           x: int = Query(0, ge=0, le=600), y: int = Query(0, ge=0, le=800)):
     """Interactive mode: apply one button press and return the screen to show. peek=1 draws the screen that press
-    would give without making it (the Kindle prefetches with it). b is the Kindle's battery level."""
+    would give without making it (the Kindle prefetches with it). b is the Kindle's battery level. k=tap with x, y
+    (in the 600x800 page) is a touch-screen tap."""
     _check(t)
     if k not in KEYS:
         raise HTTPException(status_code=400)
@@ -92,7 +96,7 @@ def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: 
 
     if b is not None:
         pages.DEVICE["battery"] = b
-    p, view = ui.handle(k, peek=bool(peek))
+    p, view = ui.handle(k, peek=bool(peek), x=x, y=y)
     buf = io.BytesIO()
     p.img.save(buf, format="PNG", optimize=True)
     return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store", "X-View": view})
@@ -125,6 +129,17 @@ def edition_mobi(t: str = Query(""), day: str = Query("")):
         log.exception("periodical build failed")
         raise HTTPException(status_code=503, detail=str(e)[:1500])
     return Response(data, media_type="application/x-mobipocket-ebook", headers={"Cache-Control": "no-store"})
+
+
+VIEW_HTML = (Path(__file__).parent / "view.html").read_text(encoding="utf-8")
+
+
+@app.get("/view")
+def view(t: str = Query("")):
+    """The paper in any web browser (an e-reader's built-in browser, an old phone or tablet): tap or use the keys."""
+    _check(t)
+    html = VIEW_HTML.replace('"__TOKEN__"', json.dumps(t).replace("</", "<\\/"))
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/offline.tar")

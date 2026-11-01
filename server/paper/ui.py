@@ -254,11 +254,29 @@ def _mark_read(link: str):
 
 # --- the state machine --------------------------------------------------------------------------
 
-def handle(key: str, peek: bool = False) -> tuple[Page, str]:
-    """Apply one button press and return (screen, view name). With peek, the state is left as it was."""
+def _tap_key(x: int, y: int) -> str:
+    """A touch screen has no keys, so a tap becomes one: a headline opens, the left third goes back a page, the
+    top strip opens the article list (or leaves an article), and anywhere else turns the page."""
+    s = _state
+    if s["view"] == "article":
+        return "back" if y < 60 else "prev" if x < W / 3 else "next"
+    if s["sel"] < 0:
+        s["sel"] = 0
+    for i, (box, _) in enumerate(_paper_view(s["view"], s["ipage"]).hotspots):
+        if box[0] <= x <= box[2] and box[1] - 6 <= y <= box[3] + 6:
+            s["sel"] = i
+            return "select"
+    return "menu" if y < 60 else "prev" if x < W / 3 else "next"
+
+
+def handle(key: str, peek: bool = False, x: int = 0, y: int = 0) -> tuple[Page, str]:
+    """Apply one button press (or a tap at x, y) and return (screen, view name). With peek, the state is left as
+    it was."""
     with _lock:
         saved = copy.deepcopy(_state) if peek else None
         try:
+            if key == "tap":
+                key = _tap_key(x, y)
             return _handle(key, peek)
         finally:
             if peek:
