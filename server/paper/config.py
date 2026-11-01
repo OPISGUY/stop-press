@@ -10,6 +10,11 @@ _path = Path(os.environ.get("STOP_PRESS_CONFIG", "stop-press.toml"))
 FILE: dict = tomllib.loads(_path.read_text("utf-8")) if _path.exists() else {}
 
 
+def _flag(key: str, default: bool) -> bool:
+    v = _get(key, default)
+    return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
+
+
 def _get(key: str, default=""):
     """PAPER_<KEY> from the environment, else `key` in the [paper] table of the config file, else the default."""
     env = os.environ.get(f"PAPER_{key.upper()}")
@@ -61,6 +66,11 @@ class Settings:
 
     # A private iCal address (Google Calendar: Settings > your calendar > "Secret address in iCal format"). Optional.
     calendar_ics_url: str = field(default_factory=lambda: _get("calendar_ics_url"))
+
+    # Fetch each article's full text from the publisher's page. Off shows the feed's summary instead.
+    full_text: bool = field(default_factory=lambda: _flag("full_text", True))
+    # Public demo: a reading state per browser, and no offline copy, edition or battery reports.
+    demo: bool = field(default_factory=lambda: _flag("demo", False))
 
     sections: dict = field(default_factory=_sections)
     markets: list = field(default_factory=lambda: FILE.get("markets", {}).get("instruments", DEFAULT_MARKETS))

@@ -104,6 +104,8 @@ def same_photo(a: str | None, b: str | None) -> bool:
 
 def _fetch_text(day: date, link: str):
     try:
+        if not S.full_text:
+            raise LookupError("full text is off")
         import httpx
         import trafilatura
 
@@ -111,6 +113,8 @@ def _fetch_text(day: date, link: str):
         text = _article_text(html, link)
         m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html)
         page_image = unescape(m.group(1)) if m else None
+    except LookupError:
+        text, page_image = "", None
     except Exception:
         log.warning("full text failed for %s", link, exc_info=True)
         text, page_image = "", None

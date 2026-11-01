@@ -19,6 +19,13 @@ var TOKEN = "__TOKEN__";
 var img = document.getElementById("page");
 var lastTouch = new Date().getTime();
 var scale = 1;
+// Which reader this is, so a shared server (the public demo) keeps each browser's place separately.
+var SID = "";
+try { SID = localStorage.getItem("stop-press-sid") || ""; } catch (e) {}
+if (!SID) {
+  SID = (new Date().getTime()).toString(36) + Math.random().toString(36).slice(2, 10);
+  try { localStorage.setItem("stop-press-sid", SID); } catch (e) {}
+}
 
 function fit() {
   var w = window.innerWidth, h = window.innerHeight;
@@ -30,7 +37,7 @@ function fit() {
 }
 
 function go(query) {
-  img.src = "ui.png?t=" + encodeURIComponent(TOKEN) + "&" + query + "&_=" + new Date().getTime();
+  img.src = "ui.png?t=" + encodeURIComponent(TOKEN) + "&s=" + SID + "&touch=1&" + query + "&_=" + new Date().getTime();
 }
 
 function press(query) {

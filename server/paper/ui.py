@@ -5,6 +5,7 @@ With peek=True a press is worked out and drawn but not kept: the Kindle uses tha
 screens while you read, so a flip only has to draw. What you've read, where you got to in each article and
 your text size are saved beside the archive, so they survive a restart of the app."""
 import copy
+from collections import OrderedDict
 import json
 import logging
 import threading
@@ -26,7 +27,12 @@ INDEX_PER_PAGE = 8
 SIZES = [(16, 23), (18, 26), (21, 30), (24, 34)]
 
 _lock = threading.Lock()
-_state = {"view": "front", "sel": 0, "ipage": 0, "link": None, "apage": 0, "back": "front"}
+_FRESH = {"view": "front", "sel": 0, "ipage": 0, "link": None, "apage": 0, "back": "front"}
+# One reading state per reader. The Kindle has no id (""); each browser on the public demo sends its own.
+_sessions: "OrderedDict[str, dict]" = OrderedDict({"": dict(_FRESH)})
+MAX_SESSIONS = 500
+_state = _sessions[""]  # the state handle() is working on
+_touch = False  # and whether its reader taps rather than presses keys
 _reader = {"size": 1, "progress": {}, "last": None}  # saved; READ (in draw.py) is saved with it
 _layouts: dict[tuple, tuple] = {}  # (link, size) -> (article, paginated layout)
 _renders: dict[tuple, tuple] = {}  # (view, ipage) -> (time, Page) without the selection drawn
@@ -269,10 +275,23 @@ def _tap_key(x: int, y: int) -> str:
     return "menu" if y < 60 else "prev" if x < W / 3 else "next"
 
 
-def handle(key: str, peek: bool = False, x: int = 0, y: int = 0) -> tuple[Page, str]:
-    """Apply one button press (or a tap at x, y) and return (screen, view name). With peek, the state is left as
-    it was."""
+def state_for(sid: str = "") -> dict:
+    """The reading state for one reader, starting at the front page; the least recently used are forgotten."""
+    if sid not in _sessions:
+        _sessions[sid] = dict(_FRESH)
+        while len(_sessions) > MAX_SESSIONS:
+            _sessions.popitem(last=False)
+    _sessions.move_to_end(sid)
+    return _sessions[sid]
+
+
+def handle(key: str, peek: bool = False, x: int = 0, y: int = 0, sid: str = "", touch: bool = False) -> tuple[Page, str]:
+    """Apply one button press (or a tap at x, y) for reader sid and return (screen, view name). With peek, the
+    state is left as it was. touch words the on-screen hints for a touch screen."""
+    global _state, _touch
     with _lock:
+        _state = state_for(sid)
+        _touch = touch
         saved = copy.deepcopy(_state) if peek else None
         try:
             if key == "tap":
@@ -302,7 +321,7 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
                 s["apage"] -= 1
             else:
                 s["view"] = s["back"]
-        elif key in ("left", "right") and not peek:
+        elif key in ("left", "right") and not peek and not S.demo:  # text size is shared, so fixed on the demo
             # text size: keep roughly the same place in the article
             frac = s["apage"] / max(n - 1, 1)
             _reader["size"] = max(0, min(len(SIZES) - 1, _reader["size"] + (1 if key == "right" else -1)))
@@ -366,11 +385,13 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
     # Render the resulting screen
     if s["view"] == "article":
         p, n = _article_page(s["link"], s["apage"])
-        _hint(p, "PAGE KEYS TURN  ·  LEFT/RIGHT TEXT SIZE  ·  BACK RETURNS  ·  HOME FRONT")
+        _hint(p, "TAP RIGHT OR LEFT TO TURN  ·  TAP THE TOP TO GO BACK" if _touch else
+              "PAGE KEYS TURN  ·  LEFT/RIGHT TEXT SIZE  ·  BACK RETURNS  ·  HOME FRONT")
         return p, "article"
     p = _copy(_paper_view(s["view"], s["ipage"]))
     if p.hotspots:
         s["sel"] = min(s["sel"], len(p.hotspots) - 1)
         p.highlight(p.hotspots[s["sel"]][0])
-    _hint(p, "PAGE KEYS FLIP  ·  5-WAY CHOOSE  ·  PRESS READS  ·  MENU ALL ARTICLES")
+    _hint(p, "TAP A HEADLINE TO READ  ·  TAP RIGHT OR LEFT TO TURN  ·  TOP: ALL ARTICLES" if _touch else
+          "PAGE KEYS FLIP  ·  5-WAY CHOOSE  ·  PRESS READS  ·  MENU ALL ARTICLES")
     return p, s["view"]
