@@ -12,6 +12,22 @@ edition into your library.
 Stop Press gives a "dead" Kindle 4 a daily job instead. It started as part of a small computer-donation project
 that keeps devices out of the bin.
 
+## Two ways to run it
+
+| | In any e-reader's browser | On a jailbroken Kindle 4 |
+|---|---|---|
+| Devices | Most Kindles (Touch, Paperwhite, Voyage, Oasis, basic), Kobo, Boox, old phones and tablets | Kindle 4 (2011, non-touch). Kindle 5 probably works too, [please test](https://github.com/OPISGUY/stop-press/issues/1) |
+| Setup | Run the server, open `/view` and bookmark it. No jailbreak | Run the server, jailbreak, copy a folder over USB |
+| Controls | Tap a headline to read it, tap the sides to turn pages | Page keys, 5-way, Home, Back, Menu |
+| Battery | Stays awake, so keep it near a charger | Sleeps between hourly refreshes; weeks on a charge |
+| Out of Wi-Fi range | Stops updating | Carries on from a saved copy |
+| Daily edition in the library | No | Yes |
+
+Want the full version on another model? [The pinned issue](https://github.com/OPISGUY/stop-press/issues/1) ranks
+them easiest first, with a checklist for each.
+
+## What it does
+
 The Kindle stays simple: it sends each button press to a small server you run, then draws the 600×800 PNG that comes
 back. The server keeps everything else, including what's on screen, what you've read and how far you got. It runs in
 one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
@@ -69,7 +85,10 @@ Without Docker: `cd server && pip install -r requirements.txt && uvicorn paper.a
 `PAPER_DATA_DIR` to a writable folder. Calibre's `ebook-convert` must be on the PATH for the `.mobi` edition. Without it,
 everything else still works.
 
-## 2. Set up the Kindle
+## 2. Set up the Kindle 4
+
+On any other device, skip this: open `http://<server>:8000/view?t=<token>` in its browser instead (see
+[Other devices](#other-devices)).
 
 1. **Jailbreak and install KUAL.** Follow NiLuJe's guide on MobileRead:
    [the K4 jailbreak and snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030). Install the
