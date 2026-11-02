@@ -79,9 +79,6 @@ def weather():
 
 # --- Markets (Yahoo Finance chart endpoint, no key) -------------------------------------------
 
-INSTRUMENTS = [tuple(i) for i in S.markets]
-
-
 def _chart(symbol: str) -> dict:
     r = _get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", params={"range": "3mo", "interval": "1d"}).json()
     res = r["chart"]["result"][0]
@@ -104,15 +101,97 @@ def _chart(symbol: str) -> dict:
 
 @cached(ttl_s=600)
 def markets():
-    out = []
-    for sym, name, kind in INSTRUMENTS:
+    """Every instrument on the watchlist (paper/watchlist.py), in its order, fetched a few at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from paper import watchlist
+
+    wl = watchlist.items()
+
+    def one(i):
         try:
-            out.append({"symbol": sym, "name": name, "kind": kind, **_chart(sym)})
+            return {**i, **_chart(i["symbol"])}
         except Exception:
-            log.warning("market %s failed", sym, exc_info=True)
+            log.warning("market %s failed", i["symbol"], exc_info=True)
+            return None
+
+    with ThreadPoolExecutor(6) as pool:
+        out = [x for x in pool.map(one, wl) if x]
     if not out:
         raise RuntimeError("no market data")
     return out
+
+
+# One instrument in depth, for the stock screen: (range, interval) per chart choice.
+RANGES = {"1D": ("1d", "5m"), "1M": ("1mo", "1d"), "6M": ("6mo", "1d"), "1Y": ("1y", "1d"), "5Y": ("5y", "1wk")}
+_detail_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def stock(symbol: str, rng: str = "1M") -> dict | None:
+    """Price, the day's and 52-week ranges, volume and a chart series for one symbol (cached 5 minutes)."""
+    import time
+
+    key = (symbol, rng)
+    hit = _detail_cache.get(key)
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    period, interval = RANGES.get(rng, RANGES["1M"])
+    try:
+        r = _get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                 params={"range": period, "interval": interval}).json()
+        res = r["chart"]["result"][0]
+        meta = res["meta"]
+        q = res["indicators"]["quote"][0]
+        closes = [c for c in q["close"] if c is not None]
+        price = meta.get("regularMarketPrice") or closes[-1]
+        prev = meta.get("chartPreviousClose") if rng == "1D" else None
+        prev = meta.get("previousClose") or prev
+        out = {
+            "symbol": symbol, "price": price, "series": closes, "currency": meta.get("currency", ""),
+            "name": meta.get("longName") or meta.get("shortName") or symbol,
+            "exchange": meta.get("fullExchangeName") or meta.get("exchangeName") or "",
+            "market_state": meta.get("marketState") or "",
+            "day_low": meta.get("regularMarketDayLow"), "day_high": meta.get("regularMarketDayHigh"),
+            "low_52w": meta.get("fiftyTwoWeekLow"), "high_52w": meta.get("fiftyTwoWeekHigh"),
+            "volume": meta.get("regularMarketVolume"), "prev_close": prev,
+            "range_pct": (price - closes[0]) / closes[0] * 100 if closes and closes[0] else None,
+            "time": meta.get("regularMarketTime"),
+        }
+    except Exception:
+        log.warning("stock %s %s failed", symbol, rng, exc_info=True)
+        return hit[1] if hit else None
+    _detail_cache[key] = (time.time(), out)
+    return out
+
+
+def stock_news(symbol: str) -> list[dict]:
+    """Recent headlines about one symbol from Yahoo's search (titles and publishers only)."""
+    import time
+
+    key = (symbol, "news")
+    hit = _detail_cache.get(key)
+    if hit and time.time() - hit[0] < 900:
+        return hit[1]
+    try:
+        r = _get("https://query1.finance.yahoo.com/v1/finance/search", params={"q": symbol, "newsCount": 6, "quotesCount": 0}).json()
+        out = [{"title": n["title"], "source": n.get("publisher", ""),
+                "when": datetime.fromtimestamp(n["providerPublishTime"], timezone.utc) if n.get("providerPublishTime") else None}
+               for n in r.get("news", [])]
+    except Exception:
+        log.warning("stock news %s failed", symbol, exc_info=True)
+        out = hit[1] if hit else []
+    _detail_cache[key] = (time.time(), out)
+    return out
+
+
+def search_symbols(q: str) -> list[dict]:
+    """Yahoo's symbol search, for adding to the watchlist."""
+    from paper.watchlist import KINDS
+
+    r = _get("https://query1.finance.yahoo.com/v1/finance/search", params={"q": q, "quotesCount": 12, "newsCount": 0}).json()
+    return [{"symbol": x["symbol"], "name": x.get("longname") or x.get("shortname") or x["symbol"],
+             "kind": KINDS.get(x.get("quoteType", ""), "stock"), "exchange": x.get("exchDisp", "")}
+            for x in r.get("quotes", []) if x.get("symbol")]
 
 
 # --- News (RSS) --------------------------------------------------------------------------------

@@ -38,6 +38,8 @@ feeds = [["BBC", "https://feeds.bbci.co.uk/news/technology/rss.xml"],
 
 # Markets: Yahoo Finance symbols as [symbol, name, kind], kind one of index, fx, crypto, commodity.
 [markets]
+# The starting watchlist. Once the server runs, edit the list at /watchlist?t=<token> instead (it is saved in
+# the data folder and takes over from this).
 lead = "^FTSE"     # quoted in the front-page note; its open/closed state heads the Markets page
 front = ["^FTSE", "^GSPC", "^IXIC", "GBPUSD=X", "BTC-USD", "GC=F", "BZ=F"]
 instruments = [

@@ -10,7 +10,9 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from urllib.parse import parse_qs, quote
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from paper import archive, edition, history, offline, pages, periodical, sources
@@ -154,6 +156,40 @@ def view(t: str = Query("")):
     _check(t)
     html = VIEW_HTML.replace('"__TOKEN__"', json.dumps(t).replace("</", "<\\/"))
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/watchlist")
+def watchlist_page(t: str = Query(""), q: str = Query("", max_length=60)):
+    """Choose the Markets pages' instruments from a phone (see watchlist_page.py)."""
+    _check(t)
+    _no_demo()
+    from paper import watchlist_page as wp
+
+    return HTMLResponse(wp.render(t, q.strip()), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/watchlist/{action}")
+async def watchlist_change(action: str, request: Request, t: str = Query("")):
+    _check(t)
+    _no_demo()
+    from paper import watchlist
+
+    form = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
+    sym = form.get("symbol", "")[:30]
+    if action == "add" and sym:
+        watchlist.add(sym, form.get("name", sym), form.get("kind", "stock"))
+    elif action == "remove":
+        watchlist.remove(sym)
+    elif action == "move":
+        watchlist.move(sym, 1 if form.get("step") == "1" else -1)
+    elif action == "reset":
+        watchlist.reset()
+    else:
+        raise HTTPException(status_code=404)
+    from paper import ui
+
+    ui._renders.clear()
+    return RedirectResponse(f"../watchlist?t={quote(t)}", status_code=303)
 
 
 @app.get("/offline.tar")

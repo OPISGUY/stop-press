@@ -17,7 +17,7 @@ from PIL import ImageDraw
 from paper import archive, photos
 from paper.config import SETTINGS as S
 from paper.draw import DARK, INK, M, MID, READ, H, W, Page, font
-from paper.pages import ORDER, PAGES, TITLES, ago, header, now, page_for
+from paper.pages import ORDER, PAGES, TITLES, ago, header, markets, markets_pages, now, page_for, stock
 
 log = logging.getLogger(__name__)
 VIEWS = ORDER + ["index"]
@@ -241,13 +241,20 @@ def _article_page(link: str, apage: int) -> tuple[Page, int]:
     return p, len(pages)
 
 
+PAGED = ("index", "markets")
+
+
+def _pages_of(view: str) -> int:
+    return _index_page(10_000)[1] if view == "index" else markets_pages() if view == "markets" else 1
+
+
 def _paper_view(view: str, ipage: int) -> Page:
     """The page as drawn for this view, from a short-lived cache (moving the selection only redraws the frame)."""
-    key = (view, ipage if view == "index" else 0)
+    key = (view, ipage if view in PAGED else 0)
     hit = _renders.get(key)
     if hit and time.time() - hit[0] < RENDER_TTL:
         return hit[1]
-    p = _index_page(ipage)[0] if view == "index" else PAGES[view]()
+    p = _index_page(ipage)[0] if view == "index" else markets(ipage) if view == "markets" else PAGES[view]()
     _renders[key] = (time.time(), p)
     return p
 
@@ -266,6 +273,8 @@ def _tap_key(x: int, y: int) -> str:
     s = _state
     if s["view"] == "article":
         return "back" if y < 60 else "prev" if x < W / 3 else "next"
+    if s["view"] == "stock":
+        return "back" if y < 60 else "range" if 180 <= y <= 460 else "prev" if x < W / 3 else "next"
     if s["sel"] < 0:
         s["sel"] = 0
     for i, (box, _) in enumerate(_paper_view(s["view"], s["ipage"]).hotspots):
@@ -309,7 +318,26 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
         s.update(view=page_for(now()), sel=-1, ipage=0)
         return PAGES[s["view"]](), s["view"]
 
-    if s["view"] == "article":
+    if s["view"] == "stock":
+        from paper import sources, watchlist
+
+        syms = [i["symbol"] for i in watchlist.items()]
+        ranges = list(sources.RANGES)
+        if key == "range":  # a tap on the chart: the next range, round again after the last
+            at = ranges.index(s.get("range", "1M")) if s.get("range") in ranges else 0
+            s["range"] = ranges[(at + 1) % len(ranges)]
+        elif key in ("next", "down", "prev", "up") and s["symbol"] in syms:
+            s["symbol"] = syms[(syms.index(s["symbol"]) + (1 if key in ("next", "down") else -1)) % len(syms)]
+        elif key in ("left", "right"):
+            at = ranges.index(s.get("range", "1M")) if s.get("range") in ranges else 1
+            s["range"] = ranges[max(0, min(len(ranges) - 1, at + (1 if key == "right" else -1)))]
+        elif key in ("back", "select"):
+            s["view"] = "markets"
+        elif key == "home":
+            s.update(view="front", sel=0)
+        elif key == "menu":
+            s.update(view="index", sel=0, ipage=0)
+    elif s["view"] == "article":
         _, n = _article_page(s["link"], s["apage"])
         if key in ("next", "down"):
             if s["apage"] < n - 1:
@@ -342,22 +370,18 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
         if s["sel"] < 0:
             s["sel"] = 0
         if key in ("next", "right"):
-            if s["view"] == "index":
-                _, pages = _index_page(s["ipage"])
-                if s["ipage"] < pages - 1:
-                    s.update(ipage=s["ipage"] + 1, sel=0)
-                else:
-                    s.update(view="front", sel=0, ipage=0)
+            if s["view"] in PAGED and s["ipage"] < _pages_of(s["view"]) - 1:
+                s.update(ipage=s["ipage"] + 1, sel=0)
             else:
                 s.update(view=VIEWS[(VIEWS.index(s["view"]) + 1) % len(VIEWS)], sel=0, ipage=0)
         elif key in ("prev", "left"):
-            if s["view"] == "index" and s["ipage"] > 0:
+            if s["view"] in PAGED and s["ipage"] > 0:
                 s.update(ipage=s["ipage"] - 1, sel=0)
             else:
                 nv = VIEWS[(VIEWS.index(s["view"]) - 1) % len(VIEWS)]
-                s.update(view=nv, sel=0)
-                if nv == "index":
-                    s["ipage"] = max(0, _index_page(10_000)[1] - 1)
+                s.update(view=nv, sel=0, ipage=0)
+                if nv in PAGED:
+                    s["ipage"] = max(0, _pages_of(nv) - 1)
         elif key in ("up", "down"):
             n = len(_paper_view(s["view"], s["ipage"]).hotspots)
             if n:
@@ -366,6 +390,10 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
             spots = _paper_view(s["view"], s["ipage"]).hotspots
             if spots:
                 item = spots[min(s["sel"], len(spots) - 1)][1]
+                if item["link"].startswith("stock:"):
+                    s.update(view="stock", symbol=item["link"][6:], range=s.get("range") or "1M")
+                    item = None
+            if spots and item is not None:
                 a = archive.get(item["link"])
                 start = 0
                 if a is not None:
@@ -383,6 +411,11 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
             s.update(view="index", sel=0, ipage=0)
 
     # Render the resulting screen
+    if s["view"] == "stock":
+        p = stock(s["symbol"], s.get("range", "1M"))
+        _hint(p, "TAP THE CHART FOR ITS RANGE  ·  SIDES: NEXT/PREVIOUS  ·  TOP: BACK" if _touch else
+              "PAGE KEYS NEXT/PREVIOUS  ·  LEFT/RIGHT CHART RANGE  ·  BACK TO MARKETS")
+        return p, "stock"
     if s["view"] == "article":
         p, n = _article_page(s["link"], s["apage"])
         _hint(p, "TAP RIGHT OR LEFT TO TURN  ·  TAP THE TOP TO GO BACK" if _touch else

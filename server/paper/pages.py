@@ -29,8 +29,28 @@ def ago(when: datetime | None) -> str:
     return f"{mins // 1440}d ago"
 
 
+CURRENCY = {"USD": "$", "GBP": "£", "EUR": "€", "JPY": "¥"}
+
+
+def money(v: float | None, cur: str, kind: str = "stock") -> str:
+    """A price in its own currency: London shares quote in pence (GBp)."""
+    if v is None:
+        return "—"
+    if kind == "fx":
+        return f"{v:.4f}"
+    if kind == "index":  # points, not money
+        return f"{v:,.0f}" if v >= 1000 else f"{v:,.2f}"
+    if cur == "GBp":
+        return f"{v:,.0f}p" if v >= 1000 else f"{v:,.1f}p"
+    sym = CURRENCY.get(cur, "")
+    digits = 0 if v >= 10000 else 2
+    return f"{sym}{v:,.{digits}f}" + ("" if sym or kind == "index" or not cur else f" {cur}")
+
+
 def price(x: dict) -> str:
     p = x["price"]
+    if x["kind"] in ("stock", "fund") or (x["kind"] == "crypto" and x["symbol"] != "BTC-USD"):
+        return money(p, x.get("currency", ""))
     if x["kind"] == "fx":
         return f"{p:.4f}"
     if x["symbol"] == "BTC-USD":
@@ -259,13 +279,25 @@ def front() -> Page:
 
 # --- Markets ------------------------------------------------------------------------------------
 
-def markets() -> Page:
+MARKET_ROWS = 13
+KIND_LABEL = {"index": "Index", "fx": "Currency", "crypto": "Crypto", "commodity": "Commodity", "stock": "Share",
+              "fund": "Fund"}
+
+
+def markets_pages() -> int:
+    return max(1, -(-len(sources.markets() or []) // MARKET_ROWS))
+
+
+def markets(ipage: int = 0) -> Page:
+    """The watchlist, a page at a time. Each row opens that instrument's own screen."""
     p = Page()
     y = header(p, "Markets")
     mk = sources.markets() or []
+    pages = markets_pages()
+    ipage = max(0, min(ipage, pages - 1))
     state = next((x["market_state"] for x in mk if x["symbol"] == S.lead_market), "")
     sub = {"REGULAR": "Markets open", "CLOSED": "Closed · last prices", "PRE": "Pre-market"}.get(state, "Latest prices")
-    y = section_title(p, y, "Markets", f"{sub} · day · 30-day trend")
+    y = section_title(p, y, "Markets", f"{sub} · page {ipage + 1} of {pages}")
 
     hf = font("sans", 11, 700)
     p.text((M, y), "INSTRUMENT", hf, MID)
@@ -274,35 +306,136 @@ def markets() -> Page:
     p.text((W - M, y), "30 DAYS", hf, MID, anchor="ra")
     y += 18
     row = 44
-    for i, x in enumerate(mk):
-        if y + row > 640:
-            break
+    for i, x in enumerate(mk[ipage * MARKET_ROWS:(ipage + 1) * MARKET_ROWS]):
         if i % 2 == 0:
             p.d.rectangle([M - 4, y, W - M + 4, y + row - 2], fill=242)
         mid = y + row / 2
         p.text((M, mid - 9), x["name"], font("sans", 16, 700), anchor="lm")
-        sub = {"index": "Index", "fx": "Currency", "crypto": "Crypto, USD", "commodity": "Commodity, USD"}[x["kind"]]
+        sub = KIND_LABEL.get(x["kind"], "") + f" · {x['symbol']}"
         if x.get("month_pct") is not None:
             sub += f" · {x['month_pct']:+.1f}% 1m"
         p.text((M, mid + 10), sub, font("sans", 11, 400), DARK, anchor="lm")
         p.text((330, mid), price(x), font("sans", 17, 600), anchor="rm")
         change(p, 420, mid, x["change_pct"], size=15)
         p.sparkline((440, y + 8, W - M, y + row - 10), x["series"], width=2)
+        p.hot((M, y, W - M, y + row - 2), {"link": f"stock:{x['symbol']}", "title": x["name"]}, tick=False)
         y += row
 
-    p.rule(y + 4)
-    y += 14
-    y = p.kicker(M, y, "Business headlines")
-    for item in (sources.news() or {}).get("business", [])[:4]:
-        if y + 40 > H - 34:
-            break
-        y0 = y
-        y = p.para(M, y + 2, W - 2 * M, item["title"], font("head", 16, 700), leading=20, max_lines=2)
-        p.text((M, y + 1), f"{item['source']} · {ago(item['when'])}", font("sans", 11, 400), MID)
-        y += 20
-        p.hot((M, y0, W - M, y - 4), item)
+    # Room left on the last page: business headlines
+    if ipage == pages - 1 and y < H - 120:
+        p.rule(y + 4)
+        y += 14
+        y = p.kicker(M, y, "Business headlines")
+        for item in (sources.news() or {}).get("business", [])[:4]:
+            if y + 40 > H - 34:
+                break
+            y0 = y
+            y = p.para(M, y + 2, W - 2 * M, item["title"], font("head", 16, 700), leading=20, max_lines=2)
+            p.text((M, y + 1), f"{item['source']} · {ago(item['when'])}", font("sans", 11, 400), MID)
+            y += 20
+            p.hot((M, y0, W - M, y - 4), item)
 
     footer(p, "markets")
+    return p
+
+
+def stock(symbol: str, rng: str = "1M") -> Page:
+    """One instrument in depth: price and move, a chart over the chosen range, the day's and 52-week ranges,
+    volume, and recent headlines about it."""
+    from paper import watchlist
+
+    p = Page()
+    y = header(p, "Markets")
+    entry = next((i for i in watchlist.items() if i["symbol"] == symbol), {"name": symbol, "kind": "stock"})
+    d = sources.stock(symbol, rng)
+    p.text((M, y), entry["name"], font("head", 30, 800))
+    if d is None:
+        p.text((M, y + 48), "No data for this one just now.", font("italic", 16, 400), DARK)
+        return p
+    kind = entry.get("kind", "stock")
+    cur = d["currency"]
+    p.text((W - M, y + 12), f"{symbol} · {d['exchange']}", font("sans", 12, 400), DARK, anchor="ra")
+    y += 46
+
+    # Price and the day's move
+    big = money(d["price"], cur, kind)
+    bf = font("head", 40, 800)
+    p.text((M, y), big, bf)
+    x = M + p.width(big, bf) + 16
+    # The day's move, as the Markets list shows it (the chart's own previous close depends on the range)
+    row = next((x for x in sources.markets() or [] if x["symbol"] == symbol), None)
+    if row and row.get("change_pct") is not None:
+        d = {**d, "prev_close": d["price"] / (1 + row["change_pct"] / 100)}
+    if d.get("prev_close"):
+        pct = (d["price"] - d["prev_close"]) / d["prev_close"] * 100
+        diff = d["price"] - d["prev_close"]
+        change(p, x + 90, y + 24, pct, size=18)
+        p.text((x + 100, y + 24), f"{diff:+,.2f} today", font("sans", 13, 400), DARK, anchor="lm")
+    state = {"REGULAR": "Market open", "CLOSED": "Market closed", "PRE": "Pre-market", "POST": "After hours"}.get(d["market_state"], "")
+    p.text((M, y + 54), state, font("sans", 12, 700), MID)
+    y += 78
+
+    # Chart with its range choices (the 5-way left/right moves between them)
+    tx = M
+    for t in sources.RANGES:
+        on = t == rng
+        f = font("sans", 13, 700 if on else 400)
+        w = p.width(t, f) + 16
+        if on:
+            p.d.rectangle([tx, y - 2, tx + w, y + 20], fill=INK)
+        p.text((tx + 8, y + 9), t, f, PAPER if on else DARK, anchor="lm")
+        tx += w + 6
+    if d.get("range_pct") is not None:
+        p.text((W - M, y + 9), f"{d['range_pct']:+.1f}% over {rng}", font("sans", 13, 700), anchor="rm")
+    y += 30
+    s = d["series"]
+    box = (M + 4, y + 8, W - M - 70, y + 220)
+    p.sparkline(box, s, width=2)
+    if s:
+        p.text((W - M, box[1]), money(max(s), cur, kind), font("sans", 11, 400), DARK, anchor="ra")
+        p.text((W - M, box[3]), money(min(s), cur, kind), font("sans", 11, 400), DARK, anchor="rd")
+    p.rule(box[3] + 10, fill=MID)
+    y = box[3] + 22
+
+    # Where the price sits in the day's and the year's range
+    def range_row(y, label, lo, hi):
+        p.text((M, y), label, font("sans", 11, 700), MID)
+        if lo is None or hi is None or hi <= lo:
+            p.text((M + 120, y), "—", font("sans", 13, 400))
+            return y + 26
+        p.text((M + 120, y - 1), money(lo, cur, kind), font("sans", 12, 400), DARK)
+        p.text((W - M, y - 1), money(hi, cur, kind), font("sans", 12, 400), DARK, anchor="ra")
+        bx0, bx1 = M + 210, W - M - 90
+        p.d.rectangle([bx0, y + 4, bx1, y + 8], fill=LIGHT)
+        mx = bx0 + (bx1 - bx0) * max(0, min(1, (d["price"] - lo) / (hi - lo)))
+        p.d.rectangle([mx - 2, y - 1, mx + 2, y + 13], fill=INK)
+        return y + 26
+
+    y = range_row(y, "TODAY", d.get("day_low"), d.get("day_high"))
+    y = range_row(y, "52 WEEKS", d.get("low_52w"), d.get("high_52w"))
+    facts = []
+    if d.get("prev_close"):
+        facts.append(("PREV CLOSE", money(d["prev_close"], cur, kind)))
+    if d.get("volume"):
+        v = d["volume"]
+        facts.append(("VOLUME", f"{v / 1e6:,.1f}m" if v >= 1e6 else f"{v:,}"))
+    for i, (label, val) in enumerate(facts):
+        fx = M + i * 270
+        p.text((fx, y), label, font("sans", 11, 700), MID)
+        p.text((fx + 120, y - 1), val, font("sans", 13, 600))
+    y += 30 if facts else 0
+
+    # Headlines about it
+    news = sources.stock_news(symbol)
+    if news and y < H - 110:
+        p.double_rule(y)
+        y = p.kicker(M, y + 12, "In the news")
+        for n in news:
+            if y + 40 > H - 34:
+                break
+            y = p.para(M, y + 2, W - 2 * M, n["title"], font("head", 15, 700), leading=19, max_lines=2)
+            p.text((M, y + 1), f"{n['source']} · {ago(n['when'])}", font("sans", 11, 400), MID)
+            y += 20
     return p
 
 

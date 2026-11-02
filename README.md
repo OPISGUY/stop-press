@@ -51,6 +51,9 @@ one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
 - **Sleeps properly:** after 3 minutes, or a press of the power button, it shows the front page and suspends.
   It wakes every hour to refresh. A charge lasts weeks. Overnight it shows a "gone to press" screen.
 - **Boots into the paper** if you want it to (KUAL → Stop Press → Start at boot: on).
+- **Markets in depth:** your own watchlist (up to 60 shares, indices, currencies, crypto), paged. Open any of them
+  for its own screen: a chart over a day to five years, today's and the 52-week range, volume and its headlines.
+  Edit the list from your phone at `/watchlist?t=<token>`: search for anything Yahoo Finance knows and add it.
 - **Yours to configure:** masthead, town, any RSS feeds, markets, your calendar, and your own numbers (any JSON URL)
   with trend lines.
 - **No accounts, no API keys** for the defaults: Open-Meteo for weather, the Yahoo Finance chart endpoint for markets,
@@ -142,7 +145,7 @@ The next time it wakes in range, it goes back to the live paper.
 | Page keys (either side) | next / previous page | turn the page |
 | 5-way up / down | move between headlines | turn the page |
 | 5-way left / right | previous / next page | smaller / bigger text (4 sizes, remembered) |
-| 5-way press | open the article (resumes where you left off) | back to the page |
+| 5-way press | open the article or the market (articles resume where you left off) | back to the page |
 | Back | all of today's articles | back to the page |
 | Home | front page | front page |
 | Menu | all of today's articles | all articles |
