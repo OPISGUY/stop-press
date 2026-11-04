@@ -2,11 +2,12 @@
 default ./stop-press.toml) and/or environment variables, which win. See stop-press.example.toml for every option."""
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 _path = Path(os.environ.get("STOP_PRESS_CONFIG", "stop-press.toml"))
+CONFIG_PATH = _path  # the /setup page writes here
 FILE: dict = tomllib.loads(_path.read_text("utf-8")) if _path.exists() else {}
 
 
@@ -95,3 +96,13 @@ class Settings:
 
 
 SETTINGS = Settings()
+
+
+def reload() -> None:
+    """Re-read the config file and environment into the SETTINGS object the rest of the server already holds, so
+    the /setup page takes effect without a restart. Settings is frozen, so each field is set directly."""
+    global FILE
+    FILE = tomllib.loads(CONFIG_PATH.read_text("utf-8")) if CONFIG_PATH.exists() else {}
+    fresh = Settings()
+    for f in fields(Settings):
+        object.__setattr__(SETTINGS, f.name, getattr(fresh, f.name))

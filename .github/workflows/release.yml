@@ -1,0 +1,79 @@
+# Builds the desktop app on each platform when a version tag (v1.2.3) is pushed, and attaches the files to a draft
+# GitHub release for the tag. Publish the draft by hand once the files look right.
+name: Release desktop app
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the draft release if it isn't there yet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Stop Press $TAG" \
+            --notes "Desktop apps for Windows and macOS (macOS is beta, not yet tested on a Mac by the maintainers) and Linux. Builds are unsigned: see the README for the first-run steps."
+
+  build:
+    needs: draft-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+          - os: ubuntu-latest
+            name: Linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python 3.12: the pinned Pillow has no wheels for newer Pythons yet, so a build would compile from source.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the server, the desktop app and PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt -r desktop/requirements.txt pyinstaller
+
+      - name: Build
+        shell: bash
+        run: pyinstaller --noconfirm desktop/stop-press.spec
+
+      - name: Package and upload to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.name }}
+        run: |
+          case "$PLATFORM" in
+            Windows)
+              out="StopPress-Windows.exe"; mv "dist/StopPress.exe" "$out" ;;
+            macOS)
+              out="StopPress-macOS.zip"; ditto -c -k --keepParent "dist/StopPress.app" "$out" ;;
+            Linux)
+              out="StopPress-Linux"; mv "dist/StopPress" "$out" ;;
+          esac
+          gh release upload "$TAG" "$out" --clobber
+
+      - name: Keep the build log if it failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.name }}
+          path: build/
+          if-no-files-found: ignore

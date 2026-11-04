@@ -74,6 +74,31 @@ one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
     **jailbroken**, with **KUAL** installed, for the full version: it sleeps between refreshes, lasts weeks on a
     charge, works out of Wi-Fi range and files a daily edition into the library.
 
+## Beginners: download the app
+
+No terminal and no Docker. The desktop app runs the paper on your own computer, with an icon in the tray (the menu
+bar on a Mac).
+
+1. Download it from the [Releases page](https://github.com/OPISGUY/stop-press/releases): `StopPress-Windows.exe`
+   for Windows, or `StopPress-macOS.zip` for a Mac (unzip it and drag StopPress into Applications). A Linux build,
+   `StopPress-Linux`, is there too.
+2. Open it. Your web browser opens the settings page: set your town, time zone and, if you like, your calendar.
+3. Connect your e-reader. Type in the address the page shows, or scan its QR code. Kindle 4 owners follow
+   [section 2](#2-set-up-the-kindle-4) below; other devices are in [Other devices](#other-devices).
+
+Good to know:
+
+- **The app isn't signed,** so your computer warns you the first time. On Windows, click **More info**, then
+  **Run anyway**. On a Mac, right-click StopPress and choose **Open**, then **Open** again. You only need this once.
+- **The computer must stay on,** on the same Wi-Fi as the device. If it goes to sleep, the paper stops updating. Tick
+  **Keep computer awake** in the tray menu while it's plugged in. Tick **Start with my computer** to have it run when
+  you log in.
+- Windows may ask whether to allow network access the first time. Click **Allow**.
+- **The Kindle daily edition (`.mobi`) needs Calibre,** a free e-book program from calibre-ebook.com. Install it and
+  the paper uses it automatically. Without Calibre, everything else still works.
+- The macOS app is **beta**: it's built automatically, but it hasn't been tried on a Mac yet. Tell us how it goes in
+  the [issues](https://github.com/OPISGUY/stop-press/issues).
+
 ## 1. Run the server
 
 ```bash

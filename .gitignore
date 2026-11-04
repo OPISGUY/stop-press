@@ -12,3 +12,7 @@ kindle/stop-press/offline/
 kindle/stop-press/offline.tar*
 kindle/stop-press/state/
 kindle/stop-press/logs/
+
+# Desktop app builds (PyInstaller)
+/build/
+/dist/

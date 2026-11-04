@@ -192,6 +192,28 @@ async def watchlist_change(action: str, request: Request, t: str = Query("")):
     return RedirectResponse(f"../watchlist?t={quote(t)}", status_code=303)
 
 
+@app.get("/setup")
+def setup(request: Request, saved: int = Query(0)):
+    """Settings for a beginner: town, time zone, masthead, calendar, and the e-reader's address (see setup_page.py)."""
+    from paper import setup_page as sp
+
+    sp.guard(request)
+    return HTMLResponse(sp.render(request, saved=bool(saved)), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/setup/save")
+async def setup_save(request: Request):
+    from paper import setup_page as sp
+
+    sp.guard(request, post=True)
+    form = {k: v[0] for k, v in parse_qs((await request.body()).decode(), keep_blank_values=True).items()}
+    error = sp.save(form)
+    if error:
+        return HTMLResponse(sp.render(request, error=error, form=form), status_code=400,
+                            headers={"Cache-Control": "no-store"})
+    return RedirectResponse("/setup?saved=1", status_code=303)
+
+
 @app.get("/offline.tar")
 def offline_tar(t: str = Query("")):
     """The paper as a book of screens, for reading when the Kindle can't reach us (see offline.py)."""
