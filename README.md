@@ -147,6 +147,29 @@ On any other device, skip this: open `http://<server>:8000/view?t=<token>` in it
 Press the **keyboard key** to return to the normal Kindle library, and use KUAL → Stop Press to start the paper again.
 To recover a stuck device, hold power for about 20 seconds.
 
+## Live mode
+
+If the Kindle is plugged in, it can stay awake and keep the page live instead of updating every hour. Market prices
+update in place every few seconds. The markets and stock screens count down to the next opening or closing bell
+(New York or London), ticking every second. Nothing ever flashes the whole page.
+
+- **Switch it on or off:** press **Home twice** quickly. A note at the foot of the screen says which mode you're in.
+  You can also use **KUAL → Stop Press → Start in live mode (plugged in)** or **Start in paper mode (hourly)**.
+- **Power:** it only runs while the Kindle is charging or above 20% battery. Below that it goes back to hourly
+  updates and sleeping.
+- **Page turns don't flash, in either mode.** Each turn leaves a faint outline of the text it wiped. The server keeps
+  count, area by area. Once an area has had about six pages of text wiped through it, the server flashes just that
+  area, a couple of seconds after the turn. Quiet areas, like the masthead, never flash. In live mode, the screen
+  is also cleaned gently 45 seconds after your last turn, and every 20 minutes, one strip at a time. In paper mode,
+  this gentle clean runs just before the Kindle sleeps.
+
+**Live mode needs FBInk**, NiLuJe's tool for drawing part of the screen at a time (GPLv3). Some of NiLuJe's Kindle 4
+packages already install it: check for `/usr/bin/fbink` or `/mnt/us/libkh/bin/fbink`. If you don't have it, get the
+build for older Kindles (K2, K3, K4 and DX) from NiLuJe's own posts. The [K4 snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030)
+and the [FBInk project](https://github.com/NiLuJe/FBInk) point to them. Copy `fbink` to `/mnt/us/stop-press/fbink`.
+We don't bundle it or download it for you: GitHub only has its source code, and we haven't pinned a checksum for
+any other download. Without FBInk the paper works as before, with a full flash on page turns, and live mode stays off.
+
 ## Reading out of Wi-Fi range
 
 Old Kindles have weak Wi-Fi, so the paper keeps a saved copy. At each hourly refresh the Kindle downloads
@@ -172,7 +195,7 @@ The next time it wakes in range, it goes back to the live paper.
 | 5-way left / right | previous / next page | smaller / bigger text (4 sizes, remembered) |
 | 5-way press | open the article or the market (articles resume where you left off) | back to the page |
 | Back | all of today's articles | back to the page |
-| Home | front page | front page |
+| Home | front page (twice quickly: live / paper mode) | front page |
 | Menu | all of today's articles | all articles |
 | Power | sleep (refreshes hourly; power wakes it straight into the paper) | same |
 | Keyboard key | back to the normal Kindle library | same |
@@ -266,7 +289,7 @@ how to help, is in [the pinned issue](https://github.com/OPISGUY/stop-press/issu
 
 - [kindle-dash](https://github.com/pascalw/kindle-dash) by Pascal Widdershoven (MIT) supplied the original
   sleep/wake idea and the `xh` and `next-wakeup` ARM binaries that `fetch-binaries.sh` downloads.
-- NiLuJe and the MobileRead community for the jailbreak, KUAL and USBNetwork.
+- NiLuJe and the MobileRead community for the jailbreak, KUAL, USBNetwork and FBInk (which live mode uses).
 - Fonts under the SIL Open Font License: Source Serif 4, Playfair Display, Inter, UnifrakturMaguntia (licences in
   `server/fonts/`).
 - Weather by [Open-Meteo](https://open-meteo.com) (CC BY 4.0). News, and the photos in the screenshots, belong to

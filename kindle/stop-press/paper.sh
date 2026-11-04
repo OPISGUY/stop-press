@@ -6,6 +6,8 @@
 #           rotation), suspends, and wakes on REFRESH_SCHEDULE (hourly by default) to refresh. The power button wakes it straight into the paper.
 #   Offline: each hour it also downloads the paper as a book of screens (/offline.tar). When the server can't be
 #           reached (the Wi-Fi drops as soon as you leave the room) the keys flip through that copy instead.
+#   Live:   plugged in (or above 20% battery) and with FBInk installed, it can instead stay awake and keep the
+#           page live: prices and countdowns update in place, with no page flashes. Home pressed twice switches.
 #   The keyboard key hands the Kindle back to its normal library.
 DIR=/mnt/us/stop-press
 . "$DIR/env.sh"
@@ -18,6 +20,11 @@ IDLE=180
 UI=$(echo "$DASH_URL" | sed 's#/kindle\.png#/ui.png#')
 BOOK="$DIR/offline"
 OFFLINE=0
+# FBInk draws one box of the screen at a time; live mode and the smart flash need it.
+FBINK=
+for f in "$DIR/fbink" /usr/bin/fbink /mnt/us/libkh/bin/fbink; do
+  [ -x "$f" ] && FBINK=$f && break
+done
 export TZ="${POSIX_TZ:-UTC0}" # the Kindle clock is UTC; this names editions by your local date
 
 log() { echo "$(date '+%F %T') $*"; }
@@ -27,8 +34,165 @@ fetch() {
   "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI&k=$1${BATT:+&b=$BATT}$3" 2>/dev/null && mv "$2.part" "$2"
 }
 
+# Page draws. With FBInk only waking up and the hourly page flash the whole screen ($2 = clean); page turns
+# never do: the server keeps count of the ink each turn wipes and, once an area has had enough to leave hollow
+# outlines, the next /live.tar flashes just that area (smart flash). Without FBInk, turns flash as they always did.
 draw() {
-  if [ "$2" = full ]; then $EIPS -f -g "$1"; else $EIPS -g "$1"; fi
+  lock
+  if [ "$2" = clean ] || { [ -z "$FBINK" ] && [ "$2" = full ]; }; then $EIPS -f -g "$1"; else $EIPS -g "$1"; fi
+  unlock
+}
+
+# --- live mode -------------------------------------------------------------------------------------
+# In live mode (the file mode says live; charging or above 20% battery) the screen stays awake and alive with
+# no page flashes. It needs FBInk (see the README); without it the paper stays in paper mode.
+# FBInk redraws one box of the screen at a time, so:
+#   - countdowns (the markets' opening and closing bells) are ticked here, every second, by stamping two-digit
+#     images (/atlas.tar) into the cells the server names, with no network at all;
+#   - every 5 seconds /live.tar brings whatever else changed on the screen as small PNG patches. The server keeps
+#     a ghost ledger and marks a patch to flash (just that box) when its area has had too many no-flash redraws;
+#   - page turns don't flash. Instead, 45 seconds after the last one (and every 20 minutes while left alone) an
+#     "ink roller" cleans the screen top to bottom, one 100-row strip a second, each blinking once in place.
+# A press holds /tmp/busy until the server has its new screen, and draws hold /tmp/drawlock, so nothing stamps
+# old content onto a new page.
+LD=/tmp/live
+LIVE=$(echo "$DASH_URL" | sed 's#/kindle\.png#/live.tar#')
+ATLAS=$(echo "$DASH_URL" | sed 's#/kindle\.png#/atlas.tar#')
+LIVEPID=
+
+# A lock left by a killed loop would freeze the page keys, so a long wait (about 2 s) takes it over.
+lock() {
+  i=0
+  until mkdir /tmp/drawlock 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -gt 2000 ] && rmdir /tmp/drawlock 2>/dev/null
+  done
+}
+unlock() { rmdir /tmp/drawlock 2>/dev/null; }
+gen() { cat /tmp/drawgen 2>/dev/null || echo 0; }
+
+# The file mode is "live" or "paper" (hourly, the default). KUAL's menu sets it; Home pressed twice switches it.
+live_wanted() {
+  [ -n "$FBINK" ] || return 1
+  [ "$(cat "$DIR/mode" 2>/dev/null)" = live ] || return 1
+  # Meant for when it's plugged in; the battery floor stops it flattening the Kindle if it isn't charging.
+  [ "$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)" = 1 ] ||
+    [ "$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null || echo 0)" -gt 20 ]
+}
+
+# Fetch /live.tar and apply its patches; keep its manifest for the ticker.
+live_poll() {
+  g=$(gen)
+  rm -rf "$LD/new"
+  mkdir -p "$LD/new"
+  "$XH" -d -q --timeout 8 --verify "$CA" -o "$LD/live.tar" get "$LIVE" 2>/dev/null &&
+    tar -xf "$LD/live.tar" -C "$LD/new" 2>/dev/null && [ -s "$LD/new/manifest.txt" ] || return 1
+  lock
+  if [ ! -e /tmp/busy ] && [ "$g" = "$(gen)" ]; then
+    while read -r kind a b c d; do
+      [ "$kind" = patch ] || continue
+      if [ "$d" = 1 ]; then $FBINK -q -f -g "file=$LD/new/$a,x=$b,y=$c"; else $FBINK -q -g "file=$LD/new/$a,x=$b,y=$c"; fi
+    done <"$LD/new/manifest.txt"
+    MODE=none
+    while read -r kind a b c; do
+      case "$kind" in
+        mode) MODE=$a; TARGET=$b ;;
+        cell) eval "CELL_$a=\"$b $c\"" ;;
+      esac
+    done <"$LD/new/manifest.txt"
+    LAST_h=; LAST_m=; LAST_s= # a patch may have covered the cells: stamp them all again
+    VIEWGEN=$g
+  fi
+  unlock
+}
+
+# Stamp cell $1 with two digits $2 if they changed. Every 60th stamp of a cell flashes just that cell.
+stamp() {
+  eval "last=\$LAST_$1; n=\${CNT_$1:-0}; xy=\$CELL_$1"
+  [ "$2" = "$last" ] && return
+  set -- "$1" "$2" $xy
+  flash=
+  [ $((n % 60)) = 59 ] && flash=-f
+  $FBINK -q $flash -g "file=$LD/atlas/d$2.png,x=$3,y=$4"
+  eval "LAST_$1=$2; CNT_$1=$((n + 1))"
+}
+
+# Flash strip $1 (0-7) of what's on screen now, unless a page is going up.
+roll() {
+  lock
+  [ ! -e /tmp/busy ] && [ "$gseen" = "$(gen)" ] && $FBINK -q -f -s "top=$(($1 * 100)),left=0,width=600,height=100"
+  unlock
+}
+
+tick() {
+  [ "$MODE" = countdown ] || [ "$MODE" = clock ] || return
+  case "$MODE" in
+    countdown)
+      s=$((TARGET - $(date +%s)))
+      [ "$s" -lt 0 ] && s=0
+      set -- $(printf '%02d %02d %02d' $((s / 3600 % 100)) $((s / 60 % 60)) $((s % 60))) ;;
+    clock) set -- $(date '+%H %M %S') ;;
+  esac
+  lock
+  if [ ! -e /tmp/busy ] && [ "$VIEWGEN" = "$(gen)" ]; then
+    stamp h "$1"
+    stamp m "$2"
+    stamp s "$3"
+  fi
+  unlock
+}
+
+live_loop() {
+  mkdir -p "$LD/atlas"
+  until [ -s "$LD/atlas/d99.png" ]; do
+    "$XH" -d -q --timeout 20 --verify "$CA" -o "$LD/atlas.tar" get "$ATLAS" 2>/dev/null &&
+      tar -xf "$LD/atlas.tar" -C "$LD/atlas" 2>/dev/null || sleep 5
+  done
+  MODE=none
+  VIEWGEN=
+  next=0
+  n=0
+  gseen=
+  band=8
+  while true; do
+    now=$(date +%s)
+    g=$(gen)
+    if [ "$g" != "$gseen" ]; then
+      gseen=$g
+      changed=$now
+      band=-1
+    fi
+    # After a press, give it and its prefetch the CPU for 2 s before asking for the new page's patches.
+    if [ ! -e /tmp/busy ] && { [ "$now" -ge "$next" ] || { [ "$VIEWGEN" != "$g" ] && [ $((now - changed)) -ge 2 ]; }; }; then
+      if live_poll; then next=$((now + 5)); else MODE=none; next=$((now + 3)); fi
+    fi
+    tick
+    [ $((now - changed)) -ge 1245 ] && changed=$((now - 45)) && band=-1 # left alone: roll again every 20 minutes
+    if [ "$band" -lt 8 ] && [ $((now - changed)) -ge 45 ]; then
+      band=$((band + 1))
+      [ "$band" -lt 8 ] && roll "$band"
+    fi
+    n=$((n + 1))
+    if [ $((n % 300)) = 0 ] && ! live_wanted; then
+      log "live mode off (battery low or time up)"
+      echo "liveoff 0 $(date +%s)" >$FIFO
+      exit 0
+    fi
+    sleep 1
+  done
+}
+
+start_live() {
+  live_wanted || return 1
+  live_loop &
+  LIVEPID=$!
+  log "live mode"
+}
+
+stop_live() {
+  [ -n "$LIVEPID" ] && kill "$LIVEPID" 2>/dev/null
+  LIVEPID=
+  rmdir /tmp/drawlock 2>/dev/null
 }
 
 # While you read, fetch (without applying) the screens the likely next presses give, so a flip only has to draw.
@@ -47,8 +211,18 @@ stop_prefetch() {
   pkill -f "peek=1" 2>/dev/null # its xh, if one is mid-fetch
 }
 
-# Show the screen for one key. $2 = full (whole-screen flash, clears ghosting) or partial; $3 = noprefetch.
+# Show the screen for one key. $2 = clean (whole-screen flash), full (a flash only without FBInk) or partial;
+# $3 = noprefetch. /tmp/busy and the draw count tell the live loop a new page is going up (see live mode).
 show() {
+  touch /tmp/busy
+  _show "$@"
+  r=$?
+  echo $(($(gen) + 1)) >/tmp/drawgen
+  rm -f /tmp/busy
+  return $r
+}
+
+_show() {
   stop_prefetch
   BATT=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
   if [ -s "/tmp/pre.$1.png" ]; then
@@ -143,6 +317,29 @@ press() {
   fi
   OFFLINE=0
   show "$@"
+  settle
+}
+
+# Paper mode has no live loop, so after a press settles (2 s) ask /live.tar once for its smart-flash patches.
+# A newer press kills the old one; live_poll also checks no page went up meanwhile.
+settle() {
+  [ -n "$FBINK" ] && [ -z "$LIVEPID" ] || return 0
+  [ -n "$SETTLE" ] && kill "$SETTLE" 2>/dev/null
+  (sleep 2; live_poll) &
+  SETTLE=$!
+}
+
+# Before sleeping, clean the page gently: one 100-row strip at a time, each blinking once in place.
+sweep() {
+  [ -n "$FBINK" ] && [ "$OFFLINE" != 1 ] || return 0
+  i=0
+  while [ $i -lt 8 ]; do
+    lock
+    $FBINK -q -f -s "top=$((i * 100)),left=0,width=600,height=100"
+    unlock
+    i=$((i + 1))
+    sleep 1
+  done
 }
 
 # Every input event is 16 bytes: seconds, microseconds, type, code, value. Key presses are type 1, value 1.
@@ -180,9 +377,35 @@ disarm_idle() {
 
 arm_idle() {
   disarm_idle
+  [ -n "$LIVEPID" ] && return # live: stay awake
   GEN=$(($(date +%s) % 100000 * 10 + ${GEN:-0} % 10 + 1)) # tags this timer, so a stale one can't put us to sleep
   (sleep $IDLE && echo "idle $GEN $(date +%s)" >$FIFO) &
   TIMER=$!
+}
+
+# Switch live/paper mode from the keys, and say so for a few seconds at the foot of the screen.
+toggle_mode() {
+  if [ -n "$LIVEPID" ]; then
+    echo paper >"$DIR/mode"
+    stop_live
+    arm_idle
+    note="PAPER MODE - hourly, sleeps when idle"
+  else
+    echo live >"$DIR/mode"
+    if start_live; then
+      note="LIVE MODE - stays awake, updates as it happens"
+    elif [ -z "$FBINK" ]; then
+      note="LIVE MODE needs FBInk - see the README"
+    else
+      note="LIVE MODE needs the charger or 20% battery"
+    fi
+    arm_idle
+  fi
+  log "$note"
+  lock
+  $EIPS 1 38 "  $note  "
+  unlock
+  (sleep 4; lock; $EIPS -g /tmp/ui.png; unlock) &
 }
 
 interactive() {
@@ -196,8 +419,9 @@ interactive() {
     n=$((n + 1))
     sleep 1
   done
-  show none full
+  show none clean
   ready=$(date +%s) # power presses before the page appears are impatience, not "go to sleep"
+  start_live
   arm_idle
   while true; do
     # BusyBox 1.7 ash's read fails when a signal lands (e.g. the idle timer we just killed); just read again.
@@ -207,7 +431,9 @@ interactive() {
     case "$ev" in
       idle)
         [ "$code" = "$GEN" ] || continue
-        log "idle, going to sleep"; disarm_idle; return ;;
+        log "idle, going to sleep"; disarm_idle; sweep; return ;;
+      liveoff)
+        LIVEPID=; arm_idle ;; # back to sleeping after 3 idle minutes
       power)
         [ "$at" -lt $((ready + 2)) ] && continue # the press that woke us, or a repeat while waking
         log "power button, going to sleep"; disarm_idle; return ;;
@@ -223,7 +449,15 @@ interactive() {
           106) press right full ;;
           194) press select full ;;
           158) press back full ;;
-          102) press home full ;;
+          102)
+            # Home twice within a second switches between live and paper mode.
+            if [ $((at - ${LASTHOME:-0})) -le 1 ]; then
+              LASTHOME=0
+              toggle_mode
+            else
+              LASTHOME=$at
+              press home full
+            fi ;;
           139) press menu full ;;
           29) exit_to_library ;;
         esac ;;
@@ -251,6 +485,7 @@ fetch_edition() {
 # Show the scheduled page, then suspend until the next refresh. Returns when the power button wakes us.
 asleep() {
   log "asleep"
+  stop_live
   stop_prefetch
   rm -f /tmp/pre.*.png
   while true; do
@@ -259,7 +494,7 @@ asleep() {
       $EIPS -f -g "$DIR/sleeping.png" # overnight
     else
       "$DIR/wait-for-wifi.sh" "$WIFI_TEST_IP" >/dev/null 2>&1
-      if show auto full noprefetch; then
+      if show auto clean noprefetch; then
         fetch_edition
         fetch_offline
       fi
@@ -288,6 +523,7 @@ exit_to_library() {
   $EIPS 4 24 "brings the paper back."
   echo 0 >$RTC
   disarm_idle
+  stop_live
   stop_prefetch
   pkill -f "tail -n 0 -f /var/log/messages"
   pkill -f "dd if=/dev/input/event"
@@ -302,6 +538,8 @@ exit_to_library() {
 
 log "starting"
 mkdir -p "$DIR/state"
+rm -f /tmp/busy
+rmdir /tmp/drawlock 2>/dev/null
 trap '' HUP
 trap '' TERM # stopping the Kindle UI also signals whatever KUAL launched, which includes us
 /etc/init.d/framework stop

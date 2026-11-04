@@ -1,5 +1,6 @@
 """The pages of the paper. Each takes no arguments, reads the cached sources, and returns a Page."""
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from paper import history, sources
 from paper.config import SETTINGS as S
@@ -277,6 +278,83 @@ def front() -> Page:
     return p
 
 
+# --- Live tickers -------------------------------------------------------------------------------
+# A countdown (or clock) is ticked by the Kindle itself in live mode: it holds the same two-digit images
+# (/atlas.tar) and stamps them into these cells each second, so the page never has to be fetched to tick.
+LIVE: dict = {}  # view -> {"cells": [(name, x, y)], "mode": ("countdown", epoch) | ("clock", 0)}, set as pages draw
+DIGIT_FONT = ("sans", 26, 700)
+CELL_W, CELL_H = 17, 30  # one digit's slot; a cell is two
+
+
+def digit_cell(img, x: int, y: int, two: str):
+    """Two digits in fixed slots on white, drawn the same on the page and in the Kindle's digit set."""
+    from PIL import ImageDraw
+
+    d = ImageDraw.Draw(img)
+    d.rectangle([x, y, x + 2 * CELL_W - 1, y + CELL_H - 1], fill=PAPER)
+    for i, ch in enumerate(two):
+        d.text((x + i * CELL_W + CELL_W / 2, y + CELL_H / 2), ch, font=font(*DIGIT_FONT), fill=INK, anchor="mm")
+
+
+def _cells(p: Page, view: str, x: int, yy: int, target: datetime | None) -> int:
+    """HH:MM:SS from x: a countdown to target, or the local time. Returns x. The Kindle ticks it in live mode."""
+    if target:
+        secs = max(0, int((target - datetime.now(timezone.utc)).total_seconds()))
+        parts, mode = (secs // 3600 % 100, secs // 60 % 60, secs % 60), ("countdown", int(target.timestamp()))
+    else:
+        n = now()
+        parts, mode = (n.hour, n.minute, n.second), ("clock", 0)
+    colon = 9
+    x0 = x
+    cells = []
+    for i, v in enumerate(parts):
+        digit_cell(p.img, x, yy, f"{v:02d}")
+        cells.append(("hms"[i], x, yy))
+        x += 2 * CELL_W
+        if i < 2:
+            p.text((x + colon / 2, yy + CELL_H / 2 - 2), ":", font(*DIGIT_FONT), INK, anchor="mm")
+            x += colon
+    LIVE[view] = {"cells": cells, "mode": mode}
+    return x0
+
+
+# Trading hours, local to each exchange. Weekdays only; holidays aren't known.
+SESSIONS = {"NYSE": ("America/New_York", (9, 30), (16, 0)), "LONDON": ("Europe/London", (8, 0), (16, 30))}
+
+
+def bell(exchange: str) -> tuple[str, datetime]:
+    """("CLOSES", when) while the exchange is open, else ("OPENS", when)."""
+    tz, o, c = SESSIONS[exchange]
+    n = datetime.now(ZoneInfo(tz))
+    for day in range(8):
+        d = (n + timedelta(days=day)).date()
+        if d.weekday() >= 5:
+            continue
+        op = datetime.combine(d, dtime(*o), ZoneInfo(tz))
+        cl = datetime.combine(d, dtime(*c), ZoneInfo(tz))
+        if n < op:
+            return "OPENS", op
+        if n < cl:
+            return "CLOSES", cl
+    return "OPENS", n
+
+
+def _main_exchange() -> str:
+    """The exchange whose bell matters now: one that's open (New York first), else the one opening soonest."""
+    bells = {x: bell(x) for x in SESSIONS}
+    open_ = [x for x in SESSIONS if bells[x][0] == "CLOSES"]
+    return open_[0] if open_ else min(SESSIONS, key=lambda x: bells[x][1])
+
+
+def bell_ticker(p: Page, view: str, y: int, exchange: str, sub: str = ""):
+    """A live countdown to the exchange's next bell at the top right, labelled to its left."""
+    what, when = bell(exchange)
+    x0 = _cells(p, view, W - M - 6 * CELL_W - 18, y, when)
+    p.text((x0 - 10, y + 1), f"{exchange} {what} IN", font("sans", 11, 700), INK, anchor="ra")
+    if sub:
+        p.text((x0 - 10, y + 16), sub, font("sans", 11, 400), DARK, anchor="ra")
+
+
 # --- Markets ------------------------------------------------------------------------------------
 
 MARKET_ROWS = 13
@@ -297,7 +375,9 @@ def markets(ipage: int = 0) -> Page:
     ipage = max(0, min(ipage, pages - 1))
     state = next((x["market_state"] for x in mk if x["symbol"] == S.lead_market), "")
     sub = {"REGULAR": "Markets open", "CLOSED": "Closed · last prices", "PRE": "Pre-market"}.get(state, "Latest prices")
-    y = section_title(p, y, "Markets", f"{sub} · page {ipage + 1} of {pages}")
+    LIVE.pop("markets", None)
+    y = section_title(p, y, "Markets")
+    bell_ticker(p, "markets", y - 50, _main_exchange(), f"{sub} · page {ipage + 1} of {pages}")
 
     hf = font("sans", 11, 700)
     p.text((M, y), "INSTRUMENT", hf, MID)
@@ -339,6 +419,15 @@ def markets(ipage: int = 0) -> Page:
     return p
 
 
+def _with_quote(symbol: str, d: dict | None) -> dict | None:
+    """A stock screen's data with the price from the last 10 seconds (the chart itself refreshes each minute)."""
+    try:
+        q = (sources.quotes() or {}).get(symbol)
+    except Exception:
+        q = None
+    return {**d, "price": q["price"]} if d and q else d
+
+
 def stock(symbol: str, rng: str = "1M") -> Page:
     """One instrument in depth: price and move, a chart over the chosen range, the day's and 52-week ranges,
     volume, and recent headlines about it."""
@@ -347,14 +436,22 @@ def stock(symbol: str, rng: str = "1M") -> Page:
     p = Page()
     y = header(p, "Markets")
     entry = next((i for i in watchlist.items() if i["symbol"] == symbol), {"name": symbol, "kind": "stock"})
-    d = sources.stock(symbol, rng)
-    p.text((M, y), entry["name"], font("head", 30, 800))
+    d = _with_quote(symbol, sources.stock(symbol, rng))
+    nf = font("head", 30, 800)
+    if p.width(entry["name"], nf) > W - 2 * M - 250:  # leave room for the bell countdown
+        nf = font("head", 22, 800)
+    p.text((M, y + (0 if nf.size == 30 else 6)), entry["name"], nf)
     if d is None:
         p.text((M, y + 48), "No data for this one just now.", font("italic", 16, 400), DARK)
         return p
     kind = entry.get("kind", "stock")
     cur = d["currency"]
-    p.text((W - M, y + 12), f"{symbol} · {d['exchange']}", font("sans", 12, 400), DARK, anchor="ra")
+    LIVE.pop("stock", None)
+    exch = "LONDON" if cur in ("GBp", "GBP") and kind in ("stock", "fund") else "NYSE" if cur == "USD" and kind in ("stock", "fund") else None
+    if exch:
+        bell_ticker(p, "stock", y + 2, exch, f"{symbol} · {d['exchange']}")
+    else:
+        p.text((W - M, y + 12), f"{symbol} · {d['exchange']}", font("sans", 12, 400), DARK, anchor="ra")
     y += 46
 
     # Price and the day's move

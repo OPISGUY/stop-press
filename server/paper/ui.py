@@ -37,6 +37,7 @@ _reader = {"size": 1, "progress": {}, "last": None}  # saved; READ (in draw.py) 
 _layouts: dict[tuple, tuple] = {}  # (link, size) -> (article, paginated layout)
 _renders: dict[tuple, tuple] = {}  # (view, ipage) -> (time, Page) without the selection drawn
 RENDER_TTL = 60
+LIVE_TTL = 10  # how stale a page may be in live mode
 
 
 # --- saved reader state -------------------------------------------------------------------------
@@ -310,6 +311,16 @@ def handle(key: str, peek: bool = False, x: int = 0, y: int = 0, sid: str = "", 
             if peek:
                 _state.clear()
                 _state.update(saved)
+
+
+def live_frame() -> tuple[Page, str]:
+    """The Kindle's screen as it stands now (for /live.tar): its page, redrawn if more than 10 seconds old."""
+    with _lock:
+        view = _sessions[""].get("view")
+        for key, (at, _) in list(_renders.items()):
+            if key[0] == view and time.time() - at > LIVE_TTL:
+                _renders.pop(key, None)
+    return handle("none", peek=True)
 
 
 def _handle(key: str, peek: bool) -> tuple[Page, str]:

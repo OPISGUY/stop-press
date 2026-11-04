@@ -10,8 +10,18 @@
 					"action": "/mnt/us/stop-press/paper-start.sh"
 				},
 				{
-					"name": "Get today's edition now",
+					"name": "Start in live mode (plugged in)",
 					"priority": 2,
+					"action": "echo live > /mnt/us/stop-press/mode && /mnt/us/stop-press/paper-start.sh"
+				},
+				{
+					"name": "Start in paper mode (hourly)",
+					"priority": 3,
+					"action": "echo paper > /mnt/us/stop-press/mode && /mnt/us/stop-press/paper-start.sh"
+				},
+				{
+					"name": "Get today's edition now",
+					"priority": 4,
 					"action": "sh /mnt/us/stop-press/edition-now.sh",
 					"exitmenu": false,
 					"status": false,
@@ -19,7 +29,7 @@
 				},
 				{
 					"name": "Start at boot: on",
-					"priority": 3,
+					"priority": 5,
 					"action": "sh /mnt/us/stop-press/autostart.sh on",
 					"exitmenu": false,
 					"status": false,
@@ -27,7 +37,7 @@
 				},
 				{
 					"name": "Start at boot: off",
-					"priority": 4,
+					"priority": 6,
 					"action": "sh /mnt/us/stop-press/autostart.sh off",
 					"exitmenu": false,
 					"status": false,

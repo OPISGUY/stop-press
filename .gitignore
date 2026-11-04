@@ -3,6 +3,8 @@ kindle/stop-press/env.sh
 kindle/stop-press/xh
 kindle/stop-press/next-wakeup
 kindle/stop-press/cacert.pem
+kindle/stop-press/fbink
+kindle/stop-press/mode
 server/fonts/static/
 __pycache__/
 *.pyc

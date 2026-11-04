@@ -2,6 +2,7 @@
 import json
 import logging
 import re
+import threading
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
 
@@ -100,8 +101,9 @@ def _chart(symbol: str) -> dict:
 
 
 @cached(ttl_s=600)
-def markets():
-    """Every instrument on the watchlist (paper/watchlist.py), in its order, fetched a few at a time."""
+def _markets_base():
+    """Every instrument on the watchlist (paper/watchlist.py), in its order, fetched a few at a time, with its
+    30-day series. markets() lays the latest prices over it."""
     from concurrent.futures import ThreadPoolExecutor
 
     from paper import watchlist
@@ -122,18 +124,72 @@ def markets():
     return out
 
 
+# Yahoo's batch quote call needs the cookie and "crumb" a browser gets. Live mode asks every 10 seconds.
+YAHOO_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+_yahoo: dict = {"client": None, "crumb": "", "at": 0.0}
+_yahoo_lock = threading.Lock()
+
+
+def _yahoo_get(url: str, params: dict) -> dict:
+    """A Yahoo JSON call with the cookie and crumb (kept for an hour, renewed on refusal)."""
+    import time
+
+    for attempt in (0, 1):
+        with _yahoo_lock:
+            if _yahoo["client"] is None or attempt or time.time() - _yahoo["at"] > 3600:
+                c = httpx.Client(headers={"User-Agent": YAHOO_UA}, timeout=15, follow_redirects=True)
+                c.get("https://fc.yahoo.com")
+                _yahoo.update(client=c, crumb=c.get("https://query2.finance.yahoo.com/v1/test/getcrumb").text.strip(),
+                              at=time.time())
+            c, crumb = _yahoo["client"], _yahoo["crumb"]
+        r = c.get(url, params={**params, "crumb": crumb})
+        if r.status_code not in (401, 403):
+            r.raise_for_status()
+            return r.json()
+    r.raise_for_status()
+    return {}
+
+
+@cached(ttl_s=10)
+def quotes() -> dict:
+    """Latest price, day move and session for the whole watchlist in one call (every 10 seconds at most)."""
+    from paper import watchlist
+
+    syms = [i["symbol"] for i in watchlist.items()]
+    res = _yahoo_get("https://query2.finance.yahoo.com/v7/finance/quote", {"symbols": ",".join(syms)})
+    out = {}
+    for q in (res.get("quoteResponse") or {}).get("result") or []:
+        if q.get("regularMarketPrice") is not None:
+            out[q["symbol"]] = {"price": q["regularMarketPrice"], "change_pct": q.get("regularMarketChangePercent"),
+                                "market_state": q.get("marketState") or ""}
+    return out
+
+
+def markets() -> list[dict]:
+    """The watchlist with its series (refreshed every ten minutes) and prices from the last 10 seconds."""
+    rows = _markets_base() or []
+    try:
+        q = quotes() or {}
+    except Exception:
+        q = {}
+    return [{**r, **{k: v for k, v in q.get(r["symbol"], {}).items() if v is not None}} for r in rows]
+
+
+markets.clear = _markets_base.clear
+
+
 # One instrument in depth, for the stock screen: (range, interval) per chart choice.
 RANGES = {"1D": ("1d", "5m"), "1M": ("1mo", "1d"), "6M": ("6mo", "1d"), "1Y": ("1y", "1d"), "5Y": ("5y", "1wk")}
 _detail_cache: dict[tuple, tuple[float, dict]] = {}
 
 
 def stock(symbol: str, rng: str = "1M") -> dict | None:
-    """Price, the day's and 52-week ranges, volume and a chart series for one symbol (cached 5 minutes)."""
+    """Price, the day's and 52-week ranges, volume and a chart series for one symbol (cached a minute, for live mode)."""
     import time
 
     key = (symbol, rng)
     hit = _detail_cache.get(key)
-    if hit and time.time() - hit[0] < 300:
+    if hit and time.time() - hit[0] < 60:
         return hit[1]
     period, interval = RANGES.get(rng, RANGES["1M"])
     try:
