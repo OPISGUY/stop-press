@@ -17,6 +17,7 @@ jobs:
       - name: Create the draft release if it isn't there yet
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}  # no checkout in this job, so gh can't tell the repo from git
           TAG: ${{ github.ref_name }}
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Stop Press $TAG" \
