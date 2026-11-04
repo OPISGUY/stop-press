@@ -34,12 +34,13 @@ fetch() {
   "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI&k=$1${BATT:+&b=$BATT}$3" 2>/dev/null && mv "$2.part" "$2"
 }
 
-# Page draws. With FBInk only waking up and the hourly page flash the whole screen ($2 = clean); page turns
-# never do: the server keeps count of the ink each turn wipes and, once an area has had enough to leave hollow
-# outlines, the next /live.tar flashes just that area (smart flash). Without FBInk, turns flash as they always did.
+# Page draws. Waking up and the hourly page flash the whole screen ($2 = clean). For page turns the server decides
+# (smart flash): it measures the ink the turn changes and, when most of the page changes, marks the PNG with a
+# "stoppress-flash" text chunk so the turn itself flashes once; with FBInk, smaller worn areas flash alone with
+# the next /live.tar, and small changes never flash. Without FBInk, turns flash as they always did.
 draw() {
   lock
-  if [ "$2" = clean ] || { [ -z "$FBINK" ] && [ "$2" = full ]; }; then $EIPS -f -g "$1"; else $EIPS -g "$1"; fi
+  if [ "$2" = clean ] || grep -q stoppress-flash "$1" 2>/dev/null || { [ -z "$FBINK" ] && [ "$2" = full ]; }; then $EIPS -f -g "$1"; else $EIPS -g "$1"; fi
   unlock
 }
 

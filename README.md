@@ -151,17 +151,21 @@ To recover a stuck device, hold power for about 20 seconds.
 
 If the Kindle is plugged in, it can stay awake and keep the page live instead of updating every hour. Market prices
 update in place every few seconds. The markets and stock screens count down to the next opening or closing bell
-(New York or London), ticking every second. Nothing ever flashes the whole page.
+(New York or London), ticking every second, without flashing.
 
 - **Switch it on or off:** press **Home twice** quickly. A note at the foot of the screen says which mode you're in.
   You can also use **KUAL → Stop Press → Start in live mode (plugged in)** or **Start in paper mode (hourly)**.
 - **Power:** it only runs while the Kindle is charging or above 20% battery. Below that it goes back to hourly
   updates and sleeping.
-- **Page turns don't flash, in either mode.** Each turn leaves a faint outline of the text it wiped. The server keeps
-  count, area by area. Once an area has had about six pages of text wiped through it, the server flashes just that
-  area, a couple of seconds after the turn. Quiet areas, like the masthead, never flash. In live mode, the screen
-  is also cleaned gently 45 seconds after your last turn, and every 20 minutes, one strip at a time. In paper mode,
-  this gentle clean runs just before the Kindle sleeps.
+- **Smart flash, in either mode.** Each page turn without a flash leaves a faint outline of the old page, so the
+  server measures how much ink every turn changes, area by area:
+  - when most of the page changes, as it does between sections, the new page goes up with one quick flash, like
+    turning a page in a Kindle book;
+  - when only part of it changes, just the worn areas flash, a couple of seconds after the turn;
+  - small changes, like moving the selection or a ticking price, never flash.
+
+  In live mode the screen is also cleaned gently 45 seconds after your last turn, and every 20 minutes, one strip
+  at a time. In paper mode this gentle clean runs just before the Kindle sleeps.
 
 **Live mode needs FBInk**, a small tool by NiLuJe that redraws one part of an e-ink screen at a time. It is free
 software under the GPLv3, and all credit for it goes to NiLuJe:

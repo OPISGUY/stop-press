@@ -107,14 +107,24 @@ def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: 
     if b is not None and not S.demo:
         pages.DEVICE["battery"] = b
     p, view = ui.handle(k, peek=bool(peek), x=x, y=y, sid=s if S.demo else "", touch=bool(touch))
-    if not peek and not S.demo:  # remember what the Kindle now shows, for live mode and the smart flash
+    whole = False
+    if not S.demo:  # what the Kindle now shows, for live mode and the smart flash
         new = p.img.convert("L")
         if _shown["img"] is not None:
-            _clean.extend(_ghost_boxes(_shown["img"], new))
-            _clean.extend(_ink_due(_shown["img"], new))
-        _shown["img"] = new
+            whole, boxes = _ink_due(_shown["img"], new, commit=not peek)
+            if not peek and not whole:
+                _clean.extend(_ghost_boxes(_shown["img"], new))
+                _clean.extend(boxes)
+        if not peek:
+            _shown["img"] = new
     buf = io.BytesIO()
-    p.img.save(buf, format="PNG", optimize=True)
+    info = None
+    if whole:  # the Kindle greps the PNG for this text chunk and draws the page with one flash
+        from PIL.PngImagePlugin import PngInfo
+
+        info = PngInfo()
+        info.add_text("stoppress-flash", "1")
+    p.img.save(buf, format="PNG", optimize=True, pnginfo=info)
     return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store", "X-View": view})
 
 
@@ -175,10 +185,10 @@ _clean: list = []  # boxes a page turn left ghosts in, flashed by the next /live
 def _ghost_boxes(old, new) -> list[tuple[int, int, int, int]]:
     """Where a page turn is likely to have left a ghost: thick black strokes (the masthead, big headlines, filled
     bars) that are now white. Thin body text barely ghosts, so it is left alone and the rest of the page never
-    flashes. A 5px minimum filter keeps only dark pixels whose whole neighbourhood is dark, i.e. thick strokes."""
+    flashes. A 3px minimum filter keeps only dark pixels whose neighbourhood is dark: thick strokes, blackletter included."""
     from PIL import Image, ImageChops, ImageFilter
 
-    thick = old.point(lambda v: 255 if v < 110 else 0).filter(ImageFilter.MinFilter(5))
+    thick = old.point(lambda v: 255 if v < 110 else 0).filter(ImageFilter.MinFilter(3))
     light = new.point(lambda v: 255 if v > 200 else 0)
     risk = ImageChops.multiply(thick, light)
     boxes = []
@@ -188,44 +198,61 @@ def _ghost_boxes(old, new) -> list[tuple[int, int, int, int]]:
     return boxes[:10]
 
 
-# Smart flash for page turns. Every no-flash page turn that turns ink white leaves a faint hollow outline of it.
-# _ink adds up, per 40px square, how many dark pixels have been wiped that way since the square was last flashed.
-# Once a square has had about six pages of text wiped through it, the area of all the well-worn squares flashes
-# once (just that area), so busy text areas are cleaned when they need it and quiet ones never flash. The ink
-# roller cleans the whole screen 45 s after the last turn, so a pause that long starts the count again.
-INK_LIMIT = 1100  # wiped dark pixels per 1600-pixel square before it is flashed
+# Smart flash for page turns. A no-flash turn that wipes ink white leaves a hollow outline of it, and one that inks
+# over white leaves a faint print of the old page inside the new black. Measured on real pages, one turn between
+# sections that changes more than about a sixth of a 40px square already shows. So, per square:
+#   - this turn's change (pixels wiped, plus half the pixels newly inked) over INK_TURN flashes that square now;
+#   - lighter changes add up in _ink, and flash once they pass INK_LIMIT.
+# When more than INK_WHOLE of the squares are due (most changes of section), the page goes up with one whole flash
+# at the moment of the turn: the PNG carries a "stoppress-flash" text chunk that paper.sh looks for. Otherwise the
+# due squares alone flash, sent with the next /live.tar a couple of seconds later. Small changes (a moved selection,
+# a ticking price) reach neither. The ink roller cleans the whole screen 45 s after
+# the last turn, so a pause that long starts the count again.
+INK_TURN = 250    # changed pixels in one turn, per 1600-pixel square
+INK_LIMIT = 600   # changed pixels added up over several turns
+INK_WHOLE = 0.15  # share of squares due at once that makes it a whole-page flash
 INK_QUIET = 60    # seconds without a turn after which the roller has cleaned everything
 _ink: dict[tuple[int, int], int] = {}
 _last_turn = {"t": 0.0}
 
 
-def _ink_due(old, new) -> list[tuple[int, int, int, int]]:
+def _ink_due(old, new, commit=True) -> tuple[bool, list[tuple[int, int, int, int]]]:
+    """(whole-page flash?, boxes to flash after). commit=False (a prefetch) decides without counting anything."""
     from PIL import Image, ImageChops
 
     now = time.time()
-    if now - _last_turn["t"] > INK_QUIET:
-        _ink.clear()
-    _last_turn["t"] = now
-    wiped = ImageChops.multiply(old.point(lambda v: 255 if v < 128 else 0), new.point(lambda v: 255 if v > 200 else 0))
-    if not wiped.getbbox():
-        return []
-    W, H = wiped.size
+    if commit:
+        if now - _last_turn["t"] > INK_QUIET:
+            _ink.clear()
+        _last_turn["t"] = now
+    ink = _ink if commit else dict(_ink)
+    dark_old, dark_new = old.point(lambda v: 255 if v < 128 else 0), new.point(lambda v: 255 if v < 128 else 0)
+    light_old, light_new = old.point(lambda v: 255 if v > 200 else 0), new.point(lambda v: 255 if v > 200 else 0)
+    wiped = ImageChops.multiply(dark_old, light_new)
+    inked = ImageChops.multiply(light_old, dark_new)
+    W, H = old.size
     cw, ch = (W + DEBT_CELL - 1) // DEBT_CELL, (H + DEBT_CELL - 1) // DEBT_CELL
     # pixel counts per square: shrink with a box filter (mean), then scale back up to counts
-    small = wiped.resize((cw, ch), Image.BOX)
+    sw, si = wiped.resize((cw, ch), Image.BOX), inked.resize((cw, ch), Image.BOX)
+    area = DEBT_CELL * DEBT_CELL
+    hot = Image.new("L", (W, H), 0)
+    due = 0
     for cy in range(ch):
         for cx in range(cw):
-            n = small.getpixel((cx, cy)) * DEBT_CELL * DEBT_CELL // 255
-            if n:
-                _ink[(cx, cy)] = _ink.get((cx, cy), 0) + n
-    if max(_ink.values(), default=0) < INK_LIMIT:
-        return []
-    hot = Image.new("L", (W, H), 0)
-    for (cx, cy), n in list(_ink.items()):
-        if n >= INK_LIMIT // 2:  # flash the well-worn neighbours too, so one flash does the job
-            hot.paste(255, (cx * DEBT_CELL, cy * DEBT_CELL, min(W, (cx + 1) * DEBT_CELL), min(H, (cy + 1) * DEBT_CELL)))
-            del _ink[(cx, cy)]
-    return _changed_boxes(Image.new("L", (W, H), 0), hot)[:10]
+            n = sw.getpixel((cx, cy)) * area // 255 + si.getpixel((cx, cy)) * area // 510
+            if not n:
+                continue
+            total = ink.get((cx, cy), 0) + n
+            if n >= INK_TURN or total >= INK_LIMIT:
+                hot.paste(255, (cx * DEBT_CELL, cy * DEBT_CELL, min(W, (cx + 1) * DEBT_CELL), min(H, (cy + 1) * DEBT_CELL)))
+                ink.pop((cx, cy), None)
+                due += 1
+            else:
+                ink[(cx, cy)] = total
+    if due >= INK_WHOLE * cw * ch:
+        ink.clear()
+        return True, []
+    return False, (_changed_boxes(Image.new("L", (W, H), 0), hot) if due else [])
 
 
 def _flash_due(box) -> bool:
