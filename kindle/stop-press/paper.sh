@@ -22,7 +22,7 @@ BOOK="$DIR/offline"
 OFFLINE=0
 # FBInk draws one box of the screen at a time; live mode and the smart flash need it.
 FBINK=
-for f in "$DIR/fbink" /usr/bin/fbink /mnt/us/libkh/bin/fbink; do
+for f in "$DIR/fbink" /mnt/us/usbnet/bin/fbink /usr/bin/fbink /mnt/us/libkh/bin/fbink; do
   [ -x "$f" ] && FBINK=$f && break
 done
 export TZ="${POSIX_TZ:-UTC0}" # the Kindle clock is UTC; this names editions by your local date

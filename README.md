@@ -163,12 +163,20 @@ update in place every few seconds. The markets and stock screens count down to t
   is also cleaned gently 45 seconds after your last turn, and every 20 minutes, one strip at a time. In paper mode,
   this gentle clean runs just before the Kindle sleeps.
 
-**Live mode needs FBInk**, NiLuJe's tool for drawing part of the screen at a time (GPLv3). Some of NiLuJe's Kindle 4
-packages already install it: check for `/usr/bin/fbink` or `/mnt/us/libkh/bin/fbink`. If you don't have it, get the
-build for older Kindles (K2, K3, K4 and DX) from NiLuJe's own posts. The [K4 snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030)
-and the [FBInk project](https://github.com/NiLuJe/FBInk) point to them. Copy `fbink` to `/mnt/us/stop-press/fbink`.
-We don't bundle it or download it for you: GitHub only has its source code, and we haven't pinned a checksum for
-any other download. Without FBInk the paper works as before, with a full flash on page turns, and live mode stays off.
+**Live mode needs FBInk**, a small tool by NiLuJe that redraws one part of an e-ink screen at a time. It is free
+software under the GPLv3, and all credit for it goes to NiLuJe:
+[github.com/NiLuJe/FBInk](https://github.com/NiLuJe/FBInk).
+
+The easiest way to get it on a Kindle 4 is NiLuJe's **USBNetwork** package, which includes a ready-built FBInk for
+older Kindles at `/mnt/us/usbnet/bin/fbink`. Install it the same way as the jailbreak and KUAL: download the Kindle 4
+`Update_usbnetwork_*_k4_install.bin` from the Kindle 2/DX/3/4 section of [NiLuJe's snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030),
+copy it to the root of the Kindle over USB, then choose Menu → Settings → Menu → Update Your Kindle. `paper.sh` finds
+FBInk there, or at `/mnt/us/stop-press/fbink`, `/usr/bin/fbink` or `/mnt/us/libkh/bin/fbink` if you have it
+already.
+
+We don't bundle FBInk ourselves. Ready-built copies for older Kindles are only published on MobileRead, so we point
+you to NiLuJe's own downloads rather than redistribute them. Without FBInk the paper works as before, with a full
+flash on page turns, and live mode stays off.
 
 ## Reading out of Wi-Fi range
 
@@ -289,7 +297,9 @@ how to help, is in [the pinned issue](https://github.com/OPISGUY/stop-press/issu
 
 - [kindle-dash](https://github.com/pascalw/kindle-dash) by Pascal Widdershoven (MIT) supplied the original
   sleep/wake idea and the `xh` and `next-wakeup` ARM binaries that `fetch-binaries.sh` downloads.
-- NiLuJe and the MobileRead community for the jailbreak, KUAL, USBNetwork and FBInk (which live mode uses).
+- [FBInk](https://github.com/NiLuJe/FBInk) by NiLuJe (GPLv3) draws live mode's partial updates and the smart flash.
+  Stop Press only runs it; it isn't included here.
+- NiLuJe and the MobileRead community for the jailbreak, KUAL and USBNetwork.
 - Fonts under the SIL Open Font License: Source Serif 4, Playfair Display, Inter, UnifrakturMaguntia (licences in
   `server/fonts/`).
 - Weather by [Open-Meteo](https://open-meteo.com) (CC BY 4.0). News, and the photos in the screenshots, belong to
