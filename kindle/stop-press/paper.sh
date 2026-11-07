@@ -63,10 +63,11 @@ LIVEPID=
 
 # A lock left by a killed loop would freeze the page keys, so a long wait (about 2 s) takes it over.
 lock() {
-  i=0
+  # (its own counter name: sh variables are global, and a caller's loop counter must survive a lock)
+  lk=0
   until mkdir /tmp/drawlock 2>/dev/null; do
-    i=$((i + 1))
-    [ $i -gt 2000 ] && rmdir /tmp/drawlock 2>/dev/null
+    lk=$((lk + 1))
+    [ $lk -gt 2000 ] && rmdir /tmp/drawlock 2>/dev/null
   done
 }
 unlock() { rmdir /tmp/drawlock 2>/dev/null; }
@@ -333,12 +334,12 @@ settle() {
 # Before sleeping, clean the page gently: one 100-row strip at a time, each blinking once in place.
 sweep() {
   [ -n "$FBINK" ] && [ "$OFFLINE" != 1 ] || return 0
-  i=0
-  while [ $i -lt 8 ]; do
+  strip=0
+  while [ $strip -lt 8 ]; do
     lock
-    $FBINK -q -f -s "top=$((i * 100)),left=0,width=600,height=100"
+    $FBINK -q -f -s "top=$((strip * 100)),left=0,width=600,height=100"
     unlock
-    i=$((i + 1))
+    strip=$((strip + 1))
     sleep 1
   done
 }
@@ -394,11 +395,11 @@ toggle_mode() {
   else
     echo live >"$DIR/mode"
     if start_live; then
-      note="LIVE MODE - stays awake, updates as it happens"
+      note="LIVE MODE - stays awake, updates live"
     elif [ -z "$FBINK" ]; then
       note="LIVE MODE needs FBInk - see the README"
     else
-      note="LIVE MODE needs the charger or 20% battery"
+      note="LIVE MODE needs charger or 20% battery"
     fi
     arm_idle
   fi
