@@ -13,6 +13,9 @@ DIR=/mnt/us/stop-press
 . "$DIR/env.sh"
 XH="$DIR/xh"
 CA="$DIR/cacert.pem"
+# xh ignores --verify for plain http:// addresses and loads the Kindle's own certificate bundle, which it
+# can't read, so every fetch to a server on your home network would fail. Point it at ours instead.
+export SSL_CERT_FILE="$DIR/cacert.pem"
 EIPS=/usr/sbin/eips
 RTC=/sys/devices/platform/mxc_rtc.0/wakeup_enable
 FIFO=/tmp/paper.fifo
