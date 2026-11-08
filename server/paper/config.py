@@ -72,6 +72,9 @@ class Settings:
     full_text: bool = field(default_factory=lambda: _flag("full_text", True))
     # Public demo: a reading state per browser, and no offline copy, edition or battery reports.
     demo: bool = field(default_factory=lambda: _flag("demo", False))
+    # For filming a demo when the markets are shut: prices take a small random walk every few seconds and the
+    # exchanges count down to a close as if open. Never leave it on for real use.
+    simulate_markets: bool = field(default_factory=lambda: _flag("simulate_markets", False))
 
     sections: dict = field(default_factory=_sections)
     markets: list = field(default_factory=lambda: FILE.get("markets", {}).get("instruments", DEFAULT_MARKETS))

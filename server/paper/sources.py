@@ -150,8 +150,14 @@ def _yahoo_get(url: str, params: dict) -> dict:
     return {}
 
 
-@cached(ttl_s=10)
 def quotes() -> dict:
+    """Latest price, day move and session for the whole watchlist (simulated if simulate_markets is on)."""
+    q = _quotes()
+    return _simulate(q or {}) if S.simulate_markets else q
+
+
+@cached(ttl_s=10)
+def _quotes() -> dict:
     """Latest price, day move and session for the whole watchlist in one call (every 10 seconds at most)."""
     from paper import watchlist
 
@@ -162,6 +168,26 @@ def quotes() -> dict:
         if q.get("regularMarketPrice") is not None:
             out[q["symbol"]] = {"price": q["regularMarketPrice"], "change_pct": q.get("regularMarketChangePercent"),
                                 "market_state": q.get("marketState") or ""}
+    return out
+
+
+_sim: dict[str, dict] = {}  # simulate_markets: symbol -> {"prev": previous close, "price": simulated price}
+
+
+def _simulate(real: dict) -> dict:
+    """simulate_markets: walk each price a little from the last real one, as if the market were open."""
+    import random
+
+    out = {}
+    for sym, q in real.items():
+        st = _sim.get(sym)
+        if st is None:
+            pct = q.get("change_pct") or 0.0
+            st = _sim[sym] = {"prev": q["price"] / (1 + pct / 100), "price": q["price"]}
+        # a believable move per redraw (about every 10 s): currencies least, crypto most
+        vol = 0.0003 if sym.endswith("=X") else 0.002 if sym.endswith("-USD") else 0.0008
+        st["price"] *= 1 + random.gauss(0, vol)
+        out[sym] = {"price": st["price"], "change_pct": (st["price"] / st["prev"] - 1) * 100, "market_state": "REGULAR"}
     return out
 
 

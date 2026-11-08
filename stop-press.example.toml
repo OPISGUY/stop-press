@@ -15,6 +15,9 @@ calendar_ics_url = ""
 # Pages: front, markets, world, day, stats. For example "front,markets,front,world" with rotate_minutes = 15.
 rotation = "front"
 rotate_minutes = 60
+# For filming a demo while the markets are shut: prices take a small random walk and the exchanges count down
+# to a close as if open. Say so if you post the video, and never leave it on for real use.
+# simulate_markets = true
 
 # News: four sections, each any number of RSS/Atom feeds as [source name, url]. Rename them freely.
 [sections.world]

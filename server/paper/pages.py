@@ -326,6 +326,8 @@ def bell(exchange: str) -> tuple[str, datetime]:
     """("CLOSES", when) while the exchange is open, else ("OPENS", when)."""
     tz, o, c = SESSIONS[exchange]
     n = datetime.now(ZoneInfo(tz))
+    if S.simulate_markets:  # filming while the markets are shut: open, closing at the next whole hour plus one
+        return "CLOSES", n.replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
     for day in range(8):
         d = (n + timedelta(days=day)).date()
         if d.weekday() >= 5:
@@ -425,7 +427,7 @@ def _with_quote(symbol: str, d: dict | None) -> dict | None:
         q = (sources.quotes() or {}).get(symbol)
     except Exception:
         q = None
-    return {**d, "price": q["price"]} if d and q else d
+    return {**d, "price": q["price"], "market_state": q.get("market_state") or d.get("market_state")} if d and q else d
 
 
 def stock(symbol: str, rng: str = "1M") -> Page:
