@@ -161,13 +161,20 @@ def _quotes() -> dict:
     """Latest price, day move and session for the whole watchlist in one call (every 10 seconds at most)."""
     from paper import watchlist
 
-    syms = [i["symbol"] for i in watchlist.items()]
+    syms = [i["symbol"] for i in watchlist.items()] + [f for f, _ in FUTURES]
     res = _yahoo_get("https://query2.finance.yahoo.com/v7/finance/quote", {"symbols": ",".join(syms)})
     out = {}
     for q in (res.get("quoteResponse") or {}).get("result") or []:
         if q.get("regularMarketPrice") is not None:
-            out[q["symbol"]] = {"price": q["regularMarketPrice"], "change_pct": q.get("regularMarketChangePercent"),
-                                "market_state": q.get("marketState") or ""}
+            state = q.get("marketState") or ""
+            row = {"price": q["regularMarketPrice"], "change_pct": q.get("regularMarketChangePercent"),
+                   "market_state": state, "ext": None}
+            # trading outside the session: before the bell, or after it until the next one
+            if state.startswith("PRE") and q.get("preMarketPrice"):
+                row["ext"] = {"kind": "pre", "price": q["preMarketPrice"], "pct": q.get("preMarketChangePercent")}
+            elif state != "REGULAR" and q.get("postMarketPrice"):
+                row["ext"] = {"kind": "post", "price": q["postMarketPrice"], "pct": q.get("postMarketChangePercent")}
+            out[q["symbol"]] = row
     return out
 
 
@@ -191,6 +198,19 @@ def _simulate(real: dict) -> dict:
     return out
 
 
+# US index futures, which trade nearly round the clock: where New York is heading before it opens.
+FUTURES = (("ES=F", "S&P 500"), ("NQ=F", "Nasdaq 100"), ("YM=F", "Dow"))
+
+
+def futures() -> list[tuple[str, float]]:
+    """(name, day move %) for each index future we have a quote for."""
+    try:
+        q = quotes() or {}
+    except Exception:
+        q = {}
+    return [(name, q[f]["change_pct"]) for f, name in FUTURES if f in q and q[f].get("change_pct") is not None]
+
+
 def markets() -> list[dict]:
     """The watchlist with its series (refreshed every ten minutes) and prices from the last 10 seconds."""
     rows = _markets_base() or []
@@ -198,7 +218,7 @@ def markets() -> list[dict]:
         q = quotes() or {}
     except Exception:
         q = {}
-    return [{**r, **{k: v for k, v in q.get(r["symbol"], {}).items() if v is not None}} for r in rows]
+    return [{**r, **{k: v for k, v in q.get(r["symbol"], {}).items() if v is not None or k == "ext"}} for r in rows]
 
 
 markets.clear = _markets_base.clear

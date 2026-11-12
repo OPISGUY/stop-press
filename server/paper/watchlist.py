@@ -14,6 +14,21 @@ MAX_ITEMS = 60
 # The starting list is [markets] instruments in stop-press.toml.
 DEFAULT = [{"symbol": s, "name": n, "kind": k} for s, n, k in S.markets]
 
+# The "AI & tech" group on the Markets pages. Added once to a list that has none flagged; after that the list
+# is the reader's own (remove or reorder them at /watchlist).
+TECH = [("NVDA", "Nvidia"), ("MSFT", "Microsoft"), ("AAPL", "Apple"), ("GOOGL", "Alphabet"), ("AMZN", "Amazon"),
+        ("META", "Meta"), ("AVGO", "Broadcom"), ("AMD", "AMD"), ("TSM", "TSMC"), ("PLTR", "Palantir"),
+        ("ASML", "ASML"), ("ARM", "Arm"), ("TSLA", "Tesla")]
+
+
+def _with_tech(lst: list[dict]) -> list[dict]:
+    if any(i.get("tech") for i in lst):
+        return lst
+    names = dict(TECH)
+    rest = [i for i in lst if i["symbol"] not in names]
+    return (rest + [{"symbol": s, "name": n, "kind": "stock", "tech": True} for s, n in TECH])[:MAX_ITEMS]
+
+
 # Yahoo's quoteType -> our kind
 KINDS = {"INDEX": "index", "CURRENCY": "fx", "CRYPTOCURRENCY": "crypto", "FUTURE": "commodity", "EQUITY": "stock",
          "ETF": "fund", "MUTUALFUND": "fund"}
@@ -35,6 +50,10 @@ def items() -> list[dict]:
 
 
 def _load() -> list[dict]:
+    return _with_tech(_load_saved())
+
+
+def _load_saved() -> list[dict]:
     try:
         if _local().exists():
             return json.loads(_local().read_text())
@@ -59,7 +78,10 @@ def add(symbol: str, name: str, kind: str):
         cur = _items if _items is not None else _load()
         if any(i["symbol"] == symbol for i in cur) or len(cur) >= MAX_ITEMS:
             return
-        _save(cur + [{"symbol": symbol, "name": name[:40], "kind": kind}])
+        new = {"symbol": symbol, "name": name[:40], "kind": kind}
+        if symbol in dict(TECH):
+            new["tech"] = True
+        _save(cur + [new])
 
 
 def remove(symbol: str):
@@ -81,4 +103,4 @@ def move(symbol: str, step: int):
 
 def reset():
     with _lock:
-        _save([dict(i) for i in DEFAULT])
+        _save(_with_tech([dict(i) for i in DEFAULT]))

@@ -16,7 +16,7 @@ from PIL import ImageDraw
 
 from paper import archive, photos
 from paper.config import SETTINGS as S
-from paper.draw import DARK, INK, M, MID, READ, H, W, Page, font
+from paper.draw import DARK, INK, M, MID, READ, H, W, Page, ScaledDraw, current_device, font
 from paper.pages import ORDER, PAGES, TITLES, ago, header, markets, markets_pages, now, page_for, stock
 
 log = logging.getLogger(__name__)
@@ -33,9 +33,13 @@ _sessions: "OrderedDict[str, dict]" = OrderedDict({"": dict(_FRESH)})
 MAX_SESSIONS = 500
 _state = _sessions[""]  # the state handle() is working on
 _touch = False  # and whether its reader taps rather than presses keys
+_mode = ""      # "live" or "paper" on a touch Kindle: drawn as a switch at the top of the screen
+_fx: set = set()  # what the Kindle should do with this screen besides draw it: "fast" (only a highlight changed,
+                  # so the quick black-and-white update will do) and "mode" (switch live/paper mode)
+MODE_BOX = (258, 6, 342, 28)  # the live/paper switch, top centre (page units)
 _reader = {"size": 1, "progress": {}, "last": None}  # saved; READ (in draw.py) is saved with it
 _layouts: dict[tuple, tuple] = {}  # (link, size) -> (article, paginated layout)
-_renders: dict[tuple, tuple] = {}  # (view, ipage) -> (time, Page) without the selection drawn
+_renders: dict[tuple, tuple] = {}  # (view, ipage, device) -> (time, Page) without the selection drawn
 RENDER_TTL = 60
 LIVE_TTL = 10  # how stale a page may be in live mode
 
@@ -86,11 +90,109 @@ def _hint(p: Page, text: str):
     p.text((W / 2, H - 20), text, font("sans", 11, 600), INK, anchor="ma")
 
 
+# Touch screens get a navigation bar instead of the hint: an arrow at each end (previous / next page, always in
+# the same place, so the Kindle can act on them without asking) and tabs between them.
+NAV_H, NAV_ARROW = 40, 70
+NAV_LABEL = {"front": "FRONT", "world": "WORLD", "markets": "MARKETS", "stats": "NUMBERS", "day": "DAY", "index": "ALL"}
+
+
+def _nav_cells(s: dict) -> list[tuple[str, str, bool]]:
+    """(label, key, current?) for the tabs of the screen in state s."""
+    if s["view"] in ("article", "sheet"):
+        return [("BACK", "back", False), ("FRONT PAGE", "home", False), ("ALL ARTICLES", "goto:index", False)]
+    if s["view"] == "stock":
+        return [("MARKETS", "back", False), ("CHART RANGE", "range", False), ("FRONT PAGE", "home", False)]
+    return [(NAV_LABEL.get(v, TITLES.get(v, v).upper()), f"goto:{v}", v == s["view"]) for v in VIEWS]
+
+
+def _nav_layout(s: dict) -> tuple[list[tuple[float, float, str, str, bool]], object]:
+    """The tabs as (x0, x1, label, key, current?) and their font: each as wide as its label plus an equal share
+    of the room left, in the largest size at which they all fit."""
+    cells = _nav_cells(s)
+    room = W - 2 * NAV_ARROW
+    for size in (12, 11, 10, 9):
+        f = font("sans", size, 700)
+        widths = [f.getlength(label) for label, _, _ in cells]
+        pad = (room - sum(widths)) / len(cells)
+        if pad >= 10:
+            break
+    out, x = [], float(NAV_ARROW)
+    for (label, key, current), w in zip(cells, widths):
+        out.append((x, x + w + pad, label, key, current))
+        x += w + pad
+    return out, f
+
+
+def _nav(p: Page, s: dict):
+    top = H - NAV_H
+    p.d.rectangle([0, top - 2, W, H], fill=255)
+    p.rule(top, 0, W, w=2)
+    mid = top + NAV_H / 2 + 1
+    p.triangle_h(NAV_ARROW / 2, mid, 14, left=True)
+    p.triangle_h(W - NAV_ARROW / 2, mid, 14, left=False)
+    cells, f = _nav_layout(s)
+    for x0, x1, label, _, current in cells:
+        if current:
+            p.d.rectangle([x0 + 2, top + 5, x1 - 2, H - 4], fill=INK)
+        else:
+            p.vrule(x0, top + 8, H - 8, MID)
+        p.text(((x0 + x1) / 2, mid), label, f, 255 if current else INK, anchor="mm")
+    p.vrule(W - NAV_ARROW, top + 8, H - 8, MID)
+
+
+def _nav_key(s: dict, x: int) -> str:
+    """The key for a tap in the navigation bar at x."""
+    if x < NAV_ARROW:
+        return "prev"
+    if x >= W - NAV_ARROW:
+        return "next"
+    cells, _ = _nav_layout(s)
+    for x0, x1, _, key, _ in cells:
+        if x < x1:
+            return key
+    return cells[-1][3]
+
+
+def _foot(p: Page, s: dict, keys_hint: str):
+    """The foot of the screen: the navigation bar on a touch screen, else the keys that work here."""
+    if _touch:
+        _nav(p, s)
+        if _mode:  # the live/paper switch
+            x0, y0, x1, y1 = MODE_BOX
+            live = _mode == "live"
+            p.d.rectangle([x0, y0, x1, y1], fill=INK if live else 255, outline=INK, width=1)
+            p.text(((x0 + x1) / 2, (y0 + y1) / 2), "LIVE" if live else "PAPER", font("sans", 11, 700),
+                   255 if live else INK, anchor="mm")
+    else:
+        _hint(p, keys_hint)
+
+
+def _sheet_page(sh: dict) -> Page:
+    """A detail sheet: a kicker, a title and a text, on a screen of its own."""
+    p = Page()
+    y = header(p, sh.get("section") or "Detail")
+    y = p.kicker(M, y + 4, sh.get("kicker") or "")
+    if sh.get("title"):
+        y = p.para(M, y + 2, W - 2 * M, sh["title"], font("head", 24, 800), leading=29, max_lines=4) + 8
+    p.rule(y, fill=MID)
+    y += 12
+    f = font("body", 16, 400)
+    for para in (sh.get("body") or "").split("\n"):
+        if not para.strip():
+            continue
+        room = int((H - 52 - y) // 23)
+        if room < 1:
+            break
+        y = p.para(M, y, W - 2 * M, para.strip(), f, leading=23, max_lines=room) + 9
+    return p
+
+
 def _copy(p: Page) -> Page:
-    q = Page()
+    q = Page(p.dev)
     q.img = p.img.copy()
-    q.d = ImageDraw.Draw(q.img)
+    q.d = ImageDraw.Draw(q.img) if isinstance(p.d, ImageDraw.ImageDraw) else ScaledDraw(q.img, p.dev)
     q.hotspots = list(p.hotspots)
+    q.photos = list(p.photos)
     return q
 
 
@@ -251,7 +353,7 @@ def _pages_of(view: str) -> int:
 
 def _paper_view(view: str, ipage: int) -> Page:
     """The page as drawn for this view, from a short-lived cache (moving the selection only redraws the frame)."""
-    key = (view, ipage if view in PAGED else 0)
+    key = (view, ipage if view in PAGED else 0, current_device().name)  # each screen size its own render
     hit = _renders.get(key)
     if hit and time.time() - hit[0] < RENDER_TTL:
         return hit[1]
@@ -269,20 +371,57 @@ def _mark_read(link: str):
 # --- the state machine --------------------------------------------------------------------------
 
 def _tap_key(x: int, y: int) -> str:
-    """A touch screen has no keys, so a tap becomes one: a headline opens, the left third goes back a page, the
-    top strip opens the article list (or leaves an article), and anywhere else turns the page."""
+    """A touch screen has no keys, so a tap becomes one. The navigation bar's arrows and tabs do what they say; a
+    headline or a market row opens; the top strip goes to the front page (or leaves an article or a stock). In an
+    article the left third turns back and the rest turns on, as in a Kindle book. Elsewhere a stray tap does
+    nothing, as on a tablet."""
     s = _state
+    armed = s.pop("armed", None)
+    if _mode and MODE_BOX[0] - 10 <= x <= MODE_BOX[2] + 10 and y <= MODE_BOX[3] + 12:
+        _fx.add("mode")
+        return "none"
+    if y >= H - NAV_H - 4:
+        key = _nav_key(s, x)
+        if key.startswith("goto:"):
+            if key[5:] in VIEWS:
+                s.update(view=key[5:], sel=0, ipage=0)
+            return "none"
+        return key
     if s["view"] == "article":
         return "back" if y < 60 else "prev" if x < W / 3 else "next"
+    if s["view"] == "sheet":
+        return "back" if y < 60 else "none"
+    page = stock(s["symbol"], s.get("range", "1M")) if s["view"] == "stock" else _paper_view(s["view"], s["ipage"])
+    if s["view"] != "stock":
+        if s["sel"] < 0:
+            s["sel"] = 0
+        # The first tap on a headline or a row frames it; a second tap on the same one opens it. E-ink turns
+        # the page too slowly to see what a finger hit otherwise.
+        for i, (box, _) in enumerate(page.hotspots):
+            if box[0] <= x <= box[2] and box[1] - 6 <= y <= box[3] + 6:
+                s["sel"] = i
+                if armed == ["hot", i]:
+                    return "select"
+                s["armed"] = ["hot", i]
+                _fx.add("fast")
+                return "none"
+    for box, action in page.taps:  # section titles, front-page market rows, the masthead, chart tabs
+        if box[0] <= x <= box[2] and box[1] <= y <= box[3]:
+            kind, _, what = action.partition(":")
+            if kind != "range" and action != "view:front" and armed != ["tap", action]:
+                s["armed"] = ["tap", action]  # (chart tabs and the masthead are plain buttons: one tap)
+                _fx.add("fast")
+                return "none"
+            if kind == "view" and what in VIEWS:
+                s.update(view=what, sel=0, ipage=0)
+            elif kind == "stock":
+                s.update(view="stock", symbol=what, range=s.get("range") or "1M")
+            elif kind == "range":
+                s["range"] = what
+            return "none"
     if s["view"] == "stock":
-        return "back" if y < 60 else "range" if 180 <= y <= 460 else "prev" if x < W / 3 else "next"
-    if s["sel"] < 0:
-        s["sel"] = 0
-    for i, (box, _) in enumerate(_paper_view(s["view"], s["ipage"]).hotspots):
-        if box[0] <= x <= box[2] and box[1] - 6 <= y <= box[3] + 6:
-            s["sel"] = i
-            return "select"
-    return "menu" if y < 60 else "prev" if x < W / 3 else "next"
+        return "back" if y < 60 else "range" if 180 <= y <= 460 else "none"
+    return "home" if y < 60 else "none"
 
 
 def state_for(sid: str = "") -> dict:
@@ -295,39 +434,50 @@ def state_for(sid: str = "") -> dict:
     return _sessions[sid]
 
 
-def handle(key: str, peek: bool = False, x: int = 0, y: int = 0, sid: str = "", touch: bool = False) -> tuple[Page, str]:
+def handle(key: str, peek: bool = False, x: int = 0, y: int = 0, sid: str = "", touch: bool = False,
+           mode: str = "") -> tuple[Page, str]:
     """Apply one button press (or a tap at x, y) for reader sid and return (screen, view name). With peek, the
-    state is left as it was. touch words the on-screen hints for a touch screen."""
-    global _state, _touch
+    state is left as it was. touch gives the screen a navigation bar and touch targets; mode ("live"/"paper")
+    draws the mode switch. The returned page's fx says what else the Kindle should do (see _fx)."""
+    global _state, _touch, _mode
     with _lock:
         _state = state_for(sid)
-        _touch = touch
+        _touch, _mode = touch, mode
+        _fx.clear()
         saved = copy.deepcopy(_state) if peek else None
         try:
             if key == "tap":
                 key = _tap_key(x, y)
-            return _handle(key, peek)
+            elif key != "none":
+                _state.pop("armed", None)  # a highlight waits only for the next tap
+            p, view = _handle(key, peek)
+            p.fx = set(_fx)
+            return p, view
         finally:
             if peek:
                 _state.clear()
                 _state.update(saved)
 
 
-def live_frame() -> tuple[Page, str]:
+def live_frame(touch: bool = False, mode: str = "") -> tuple[Page, str]:
     """The Kindle's screen as it stands now (for /live.tar): its page, redrawn if more than 10 seconds old."""
     with _lock:
         view = _sessions[""].get("view")
         for key, (at, _) in list(_renders.items()):
             if key[0] == view and time.time() - at > LIVE_TTL:
                 _renders.pop(key, None)
-    return handle("none", peek=True)
+    return handle("none", peek=True, touch=touch, mode=mode)
 
 
 def _handle(key: str, peek: bool) -> tuple[Page, str]:
     s = _state
     if key == "auto":
         s.update(view=page_for(now()), sel=-1, ipage=0)
-        return PAGES[s["view"]](), s["view"]
+        p = PAGES[s["view"]]()
+        if _touch:  # the sleeping page wakes straight into taps, so it carries the bar too
+            p = _copy(p)
+            _foot(p, s, "")
+        return p, s["view"]
 
     if s["view"] == "stock":
         from paper import sources, watchlist
@@ -344,6 +494,13 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
             s["range"] = ranges[max(0, min(len(ranges) - 1, at + (1 if key == "right" else -1)))]
         elif key in ("back", "select"):
             s["view"] = "markets"
+        elif key == "home":
+            s.update(view="front", sel=0)
+        elif key == "menu":
+            s.update(view="index", sel=0, ipage=0)
+    elif s["view"] == "sheet":
+        if key in ("back", "select", "prev", "up", "left"):
+            s["view"] = s.get("back") or "front"
         elif key == "home":
             s.update(view="front", sel=0)
         elif key == "menu":
@@ -375,7 +532,8 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
         if not peek:
             _reader["progress"][s["link"]] = s["apage"]
             _reader["last"] = s["link"]
-            _renders.pop(("index", 0), None)  # its 'continue reading' line has moved on
+            for k in [k for k in _renders if k[0] == "index"]:  # its 'continue reading' line has moved on
+                _renders.pop(k, None)
             _dirty.set()
     else:
         if s["sel"] < 0:
@@ -404,6 +562,11 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
                 if item["link"].startswith("stock:"):
                     s.update(view="stock", symbol=item["link"][6:], range=s.get("range") or "1M")
                     item = None
+                elif item["link"].startswith("sheet:"):
+                    sheet = _paper_view(s["view"], s["ipage"]).sheets.get(item["link"][6:])
+                    if sheet:
+                        s.update(back=s["view"], view="sheet", sheet=sheet)
+                    item = None
             if spots and item is not None:
                 a = archive.get(item["link"])
                 start = 0
@@ -424,18 +587,29 @@ def _handle(key: str, peek: bool) -> tuple[Page, str]:
     # Render the resulting screen
     if s["view"] == "stock":
         p = stock(s["symbol"], s.get("range", "1M"))
-        _hint(p, "TAP THE CHART FOR ITS RANGE  ·  SIDES: NEXT/PREVIOUS  ·  TOP: BACK" if _touch else
-              "PAGE KEYS NEXT/PREVIOUS  ·  LEFT/RIGHT CHART RANGE  ·  BACK TO MARKETS")
+        _foot(p, s, "PAGE KEYS NEXT/PREVIOUS  ·  LEFT/RIGHT CHART RANGE  ·  BACK TO MARKETS")
         return p, "stock"
+    if s["view"] == "sheet":
+        p = _sheet_page(s.get("sheet") or {})
+        _foot(p, s, "BACK RETURNS  ·  HOME FRONT")
+        return p, "sheet"
     if s["view"] == "article":
         p, n = _article_page(s["link"], s["apage"])
-        _hint(p, "TAP RIGHT OR LEFT TO TURN  ·  TAP THE TOP TO GO BACK" if _touch else
-              "PAGE KEYS TURN  ·  LEFT/RIGHT TEXT SIZE  ·  BACK RETURNS  ·  HOME FRONT")
+        _foot(p, s, "PAGE KEYS TURN  ·  LEFT/RIGHT TEXT SIZE  ·  BACK RETURNS  ·  HOME FRONT")
         return p, "article"
     p = _copy(_paper_view(s["view"], s["ipage"]))
     if p.hotspots:
         s["sel"] = min(s["sel"], len(p.hotspots) - 1)
-        p.highlight(p.hotspots[s["sel"]][0])
-    _hint(p, "TAP A HEADLINE TO READ  ·  TAP RIGHT OR LEFT TO TURN  ·  TOP: ALL ARTICLES" if _touch else
-          "PAGE KEYS FLIP  ·  5-WAY CHOOSE  ·  PRESS READS  ·  MENU ALL ARTICLES")
+        if not _touch:
+            p.highlight(p.hotspots[s["sel"]][0])
+    if _touch:  # a finger's selection: whatever its first tap framed
+        armed = s.get("armed") or []
+        if armed[:1] == ["hot"] and armed[1] < len(p.hotspots):
+            p.highlight(p.hotspots[armed[1]][0])
+        elif armed[:1] == ["tap"]:
+            for box, action in _paper_view(s["view"], s["ipage"]).taps:
+                if action == armed[1]:
+                    p.highlight(box, tab=False)
+                    break
+    _foot(p, s, "PAGE KEYS FLIP  ·  5-WAY CHOOSE  ·  PRESS READS  ·  MENU ALL ARTICLES")
     return p, s["view"]

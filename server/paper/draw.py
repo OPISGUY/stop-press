@@ -1,11 +1,18 @@
-"""Drawing toolkit for a 600x800, 16-grey e-ink page. Everything is black on white with a couple of greys;
-fine detail below ~1px disappears on the Kindle 4, so rules are at least 1px and text at least 12px."""
+"""Drawing toolkit for a 16-grey e-ink page. Everything is black on white with a couple of greys; fine detail
+below ~1px disappears on the Kindle 4, so rules are at least 1px and text at least 12px.
+
+Pages are laid out in "page units": a 600x800 page, the Kindle 4's screen. Other Kindles have bigger, sharper
+screens, so each request says the device's pixel size (a Device) and the Page draws straight onto a canvas that
+size: coordinates, line widths and font sizes are scaled, the page centred. Text is rendered at the device's own
+resolution, not stretched, so it stays sharp. At 600x800 nothing is scaled at all."""
+import contextvars
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 600, 800
+W, H = 600, 800  # page units
 M = 20  # outer margin
 INK, DARK, MID, LIGHT, PAPER = 0, 68, 136, 204, 255
 
@@ -36,17 +43,174 @@ def font(family: str, size: int, weight: int = 400) -> ImageFont.FreeTypeFont:
         else:
             values.append(a["default"])
     f.set_variation_by_axes(values)
+    _FONT_ARGS[id(f)] = (family, size, weight)
     return f
+
+
+_FONT_ARGS: dict[int, tuple] = {}  # font object -> (family, size, weight), to find its scaled twin
+
+
+def scaled_font(f, s: float):
+    """The same face at s times the size (f itself if s is 1 or f wasn't made by font())."""
+    if f is None or s == 1:
+        return f
+    args = _FONT_ARGS.get(id(f))
+    if args is None:
+        return f
+    family, size, weight = args
+    return font(family, max(1, round(size * s)), weight)
+
+
+# -- crisp text on 16-grey e-ink ---------------------------------------------------------------
+# A partial (no-flash) update leaves the soft grey edge of anti-aliased text paler than it should be, so thin
+# strokes look blurred. Steepen the ramp (edges go darker or vanish) and send only the panel's own 16 greys.
+_CRISP = [round(max(0.0, min(1.0, (v - 56) / (224 - 56))) ** 1.3 * 15) * 17 for v in range(256)]
+
+
+def crisp(img, keep=()):
+    """img (mode L) with the crisp ramp applied, except inside the keep boxes (photos)."""
+    out = img.point(_CRISP)
+    for box in keep:
+        out.paste(img.crop(box), (box[0], box[1]))
+    return out
+
+
+# -- devices ------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Device:
+    """A Kindle screen in pixels (portrait). The 600x800 page is scaled to fit it and centred."""
+    width: int = W
+    height: int = H
+    mxc: bool = False  # the newer display driver (Kindle Touch, Paperwhite and later): it has fast 1-bit updates
+
+    @property
+    def scale(self) -> float:
+        return min(self.width / W, self.height / H)
+
+    @property
+    def offset(self) -> tuple[float, float]:
+        s = self.scale
+        return (self.width - W * s) / 2, (self.height - H * s) / 2
+
+    @property
+    def name(self) -> str:
+        return f"{self.width}x{self.height}{'m' if self.mxc else ''}"
+
+    def pt(self, x: float, y: float) -> tuple[float, float]:
+        """Page units to device pixels."""
+        ox, oy = self.offset
+        return ox + x * self.scale, oy + y * self.scale
+
+    def from_px(self, x: float, y: float) -> tuple[float, float]:
+        """Device pixels (a tap) to page units."""
+        ox, oy = self.offset
+        return (x - ox) / self.scale, (y - oy) / self.scale
+
+
+KINDLE4 = Device()
+_device: contextvars.ContextVar[Device] = contextvars.ContextVar("device", default=KINDLE4)
+
+
+@lru_cache(maxsize=16)
+def device(spec: str = "", mxc: bool = False) -> Device:
+    """'758x1024' -> Device(758, 1024). Anything missing or unreasonable is the Kindle 4's 600x800."""
+    try:
+        w, h = (int(v) for v in spec.lower().split("x"))
+    except (ValueError, AttributeError):
+        w, h = W, H
+    if not (300 <= w <= 2400 and 400 <= h <= 3200):
+        w, h = W, H
+    return Device(w, h, mxc)
+
+
+def current_device() -> Device:
+    return _device.get()
+
+
+def use_device(dev: Device):
+    """Pages made after this (in this request) are drawn for dev. Returns a token for reset_device."""
+    return _device.set(dev)
+
+
+def reset_device(token):
+    _device.reset(token)
+
+
+class ScaledDraw:
+    """ImageDraw that takes page units and draws in device pixels: points, widths and fonts are scaled."""
+
+    def __init__(self, img, dev: Device):
+        self._d = ImageDraw.Draw(img)
+        self.dev = dev
+        self.s = dev.scale
+
+    def _xy(self, xy):
+        if isinstance(xy, (tuple, list)) and xy and isinstance(xy[0], (tuple, list)):
+            return [self.dev.pt(*p) for p in xy]
+        flat = list(xy)
+        out = []
+        for i in range(0, len(flat) - 1, 2):
+            out.extend(self.dev.pt(flat[i], flat[i + 1]))
+        return out
+
+    def _kw(self, kw):
+        if kw.get("width"):
+            kw["width"] = max(1, round(kw["width"] * self.s))
+        if "radius" in kw and kw["radius"]:
+            kw["radius"] = kw["radius"] * self.s
+        if "font" in kw:
+            kw["font"] = scaled_font(kw["font"], self.s)
+        return kw
+
+    def text(self, xy, text, fill=None, font=None, anchor=None, **kw):
+        self._d.text(self.dev.pt(*xy), text, fill=fill, font=scaled_font(font, self.s), anchor=anchor, **self._kw(kw))
+
+    def textlength(self, text, font=None, **kw):
+        return self._d.textlength(text, font=scaled_font(font, self.s), **kw) / self.s
+
+    def textbbox(self, xy, text, font=None, anchor=None, **kw):
+        x0, y0, x1, y1 = self._d.textbbox(self.dev.pt(*xy), text, font=scaled_font(font, self.s), anchor=anchor,
+                                          **self._kw(kw))
+        a, b = self.dev.from_px(x0, y0)
+        c, d = self.dev.from_px(x1, y1)
+        return a, b, c, d
+
+    def __getattr__(self, name):  # rectangle, line, polygon, ellipse, point, arc, ...
+        fn = getattr(self._d, name)
+
+        def scaled(xy, *args, **kw):
+            return fn(self._xy(xy), *args, **self._kw(kw))
+
+        return scaled
 
 
 READ: set[str] = set()  # links already opened on the Kindle; ui.py fills it, headlines get a tick
 
 
 class Page:
-    def __init__(self):
-        self.img = Image.new("L", (W, H), PAPER)
-        self.d = ImageDraw.Draw(self.img)
+    def __init__(self, dev: Device | None = None):
+        self.dev = dev or current_device()
+        self.img = Image.new("L", (self.dev.width, self.dev.height), PAPER)
+        self.d = ImageDraw.Draw(self.img) if self.dev == KINDLE4 else ScaledDraw(self.img, self.dev)
         self.hotspots: list[tuple[tuple, dict]] = []  # (box, article) the 5-way can select, in reading order
+        # (box, action) a finger can also tap: "view:<name>", "stock:<symbol>" or "range:<chart range>"
+        self.taps: list[tuple[tuple, str]] = []
+        self.fx: set = set()  # set by ui.handle: extra things for the Kindle to do with this screen
+        # id -> {"section", "kicker", "title", "body"}: short texts that open on a screen of their own from a
+        # hotspot whose link is "sheet:<id>"
+        self.sheets: dict[str, dict] = {}
+        self.photos: list[tuple] = []  # device-pixel boxes of the photos (left alone by crisp)
+
+    def tap(self, box, action: str):
+        """A touch target that isn't a 5-way stop: a section title, a market row on the front page, a chart tab."""
+        self.taps.append((box, action))
+
+    def real_box(self, box) -> tuple[int, int, int, int]:
+        """A box in page units as whole device pixels."""
+        x0, y0 = self.dev.pt(box[0], box[1])
+        x1, y1 = self.dev.pt(box[2], box[3])
+        return round(x0), round(y0), round(x1), round(y1)
 
     def hot(self, box, item: dict, tick: bool = True):
         if item.get("link"):
@@ -54,11 +218,12 @@ class Page:
             if tick and item["link"] in READ:
                 self.tick(box[0] - 14, box[1] + 4)
 
-    def highlight(self, box):
+    def highlight(self, box, tab=True):
         """Selection marker: a heavy frame and a tab in the margin, both survive a partial e-ink refresh."""
         x0, y0, x1, y1 = box
-        self.d.rectangle([x0 - 6, y0 - 4, x1 + 6, y1 + 4], outline=INK, width=3)
-        self.d.rectangle([0, y0 - 4, 7, y1 + 4], fill=INK)
+        self.d.rectangle([max(1, x0 - 6), y0 - 4, min(W - 2, x1 + 6), y1 + 4], outline=INK, width=3)
+        if tab:
+            self.d.rectangle([0, y0 - 4, 7, y1 + 4], fill=INK)
 
     # -- text -----------------------------------------------------------------------------------
 
@@ -162,6 +327,15 @@ class Page:
             pts = [(x - size / 2, y - h / 2), (x + size / 2, y - h / 2), (x, y + h / 2)]
         self.d.polygon(pts, fill=fill)
 
+    def triangle_h(self, x, y, size, left: bool, fill=INK):
+        """Left/right arrow head (the navigation bar), x,y = centre."""
+        w = size * 0.85
+        if left:
+            pts = [(x + w / 2, y - size / 2), (x + w / 2, y + size / 2), (x - w / 2, y)]
+        else:
+            pts = [(x - w / 2, y - size / 2), (x - w / 2, y + size / 2), (x + w / 2, y)]
+        self.d.polygon(pts, fill=fill)
+
     def sparkline(self, box, series, width=2, baseline=True):
         x0, y0, x1, y1 = box
         s = [v for v in series if v is not None]
@@ -212,10 +386,12 @@ class Page:
         from paper import photos
 
         x0, y0, x1, y1 = (int(v) for v in box)
-        img = photos.fit(url, x1 - x0, y1 - y0)
+        rx0, ry0, rx1, ry1 = self.real_box((x0, y0, x1, y1))  # fitted at the device's own resolution
+        img = photos.fit(url, rx1 - rx0, ry1 - ry0)
         if img is None:
             return False
-        self.img.paste(img, (x0, y0))
+        self.img.paste(img, (rx0, ry0))
+        self.photos.append((rx0, ry0, rx1, ry1))
         self.d.rectangle([x0, y0, x1 - 1, y1 - 1], outline=INK, width=1)
         return True
 

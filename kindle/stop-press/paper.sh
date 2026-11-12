@@ -1,7 +1,12 @@
 #!/bin/sh
-# Stop Press on the Kindle 4.
-#   Awake:  the page keys, 5-way, Home, Menu and Back drive the paper (the server keeps the state; we just
-#           forward each press to /ui.png and draw what comes back).
+# Stop Press on a Kindle. One script, two kinds of device (see "device profile" below):
+#   keys   the Kindle 4: page keys, 5-way, Home, Menu and Back;
+#   touch  the Kindle Touch, Paperwhite and later: tap a headline or market once to frame it and again to open
+#          it, use the navigation bar along the foot (or swipe left/right) to turn, swipe down for the front
+#          page and up for the article list, tap LIVE/PAPER at the top (or hold a finger down) to switch mode,
+#          hold the top-left corner to go back to the Kindle library.
+#   Awake:  each press or tap goes to the server (it keeps the state; we just ask /ui.png and draw what comes
+#           back).
 #   Asleep: after the power button, or 3 minutes without a press, the Kindle shows the front page (or your
 #           rotation), suspends, and wakes on REFRESH_SCHEDULE (hourly by default) to refresh. The power button wakes it straight into the paper.
 #   Offline: each hour it also downloads the paper as a book of screens (/offline.tar). When the server can't be
@@ -20,21 +25,115 @@ EIPS=/usr/sbin/eips
 RTC=/sys/devices/platform/mxc_rtc.0/wakeup_enable
 FIFO=/tmp/paper.fifo
 IDLE=180
-UI=$(echo "$DASH_URL" | sed 's#/kindle\.png#/ui.png#')
 BOOK="$DIR/offline"
 OFFLINE=0
-# FBInk draws one box of the screen at a time; live mode and the smart flash need it.
+# FBInk draws one box of the screen at a time; live mode and the smart flash need it, and so do touch Kindles.
 FBINK=
 for f in "$DIR/fbink" /mnt/us/usbnet/bin/fbink /usr/bin/fbink /mnt/us/libkh/bin/fbink; do
   [ -x "$f" ] && FBINK=$f && break
 done
+
+# --- device profile --------------------------------------------------------------------------------
+# The Kindle 4 (and older) has the legacy e-ink driver, keys and SysV init scripts. Later Kindles have the mxcfb
+# driver, a touch screen and upstart. INPUT, SW x SH (screen pixels) and the helpers below are all that differs.
+PATH=/sbin:/usr/sbin:$PATH
+if [ -e /proc/eink_fb ] || [ ! -e /etc/upstart/lab126_gui.conf ]; then
+  INPUT=keys
+  SW=600
+  SH=800
+else
+  INPUT=touch
+  SW=$(cut -d, -f1 /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+  SH=
+  if [ -n "$FBINK" ]; then
+    eval "$("$FBINK" -e 2>/dev/null | tr ';' '\n' | grep -e '^viewWidth=' -e '^viewHeight=')"
+    SW=${viewWidth:-$SW}
+    SH=$viewHeight
+  fi
+  SW=${SW:-758}
+  SH=${SH:-1024}
+  TOUCH_DEV=${TOUCH_DEV:-/dev/input/event0}
+fi
+# Tell the server the screen, so it draws pages at this size (nothing is sent for the Kindle 4's 600x800).
+DEVQ=
+[ "$SW" = 600 ] && [ "$SH" = 800 ] || DEVQ="&dev=${SW}x${SH}"
+[ "$INPUT" = touch ] && DEVQ="$DEVQ&touch=1&epd=mxc"
+url() { echo "$DASH_URL" | sed "s#/kindle\\.png#/$1#"; } # the server address for another endpoint
+UI="$(url ui.png)$DEVQ"
+# The screens fetched ahead while you read. A touch screen has no up/down; its navigation bar's arrows (the end
+# cells of the bar along the foot, see ui.py) are the next and previous page, answered here from those screens.
+if [ "$INPUT" = touch ]; then PREKEYS="next prev"; else PREKEYS="next down prev up"; fi
+NAV_Y=$((SH - SH * 44 / 800))
+NAV_ARROW=$((SW * 70 / 600))
+
+# Show a tap was felt, at once: blink a small square under the finger (the page that follows redraws it).
+ack() {
+  ax=$(($1 - 28)); [ $ax -lt 0 ] && ax=0
+  ay=$(($2 - 28)); [ $ay -lt 0 ] && ay=0
+  "$FBINK" -q -h -W A2 -s "top=$ay,left=$ax,width=56,height=56" 2>/dev/null
+}
+# Put the square back as it should be (a tap that changed nothing would otherwise leave it inverted).
+unack() {
+  lock
+  "$FBINK" -q -W GL16 -s "top=$ay,left=$ax,width=56,height=56" 2>/dev/null
+  unlock
+}
+
+# Put image $1 on the screen; $2 = flash for a whole-screen flash, fast when only a highlight changed.
+# On the newer driver each job gets the update mode made for it:
+#   flash  GC16 with a flash, and wait for it, so nothing lands on top of a half-finished flash;
+#   fast   DU, the quick black-and-white update (about a third of the time): enough for a selection frame;
+#   else   GL16, the no-flash mode Kindles turn book pages with (it leaves white alone, so less ghosting).
+put() {
+  if [ "$INPUT" = touch ]; then
+    case "$2" in
+      flash) "$FBINK" -q -f -w -W GC16 -g "file=$1" ;;
+      fast) "$FBINK" -q -W DU -g "file=$1" ;;
+      *) "$FBINK" -q -W GL16 -g "file=$1" ;;
+    esac
+  elif [ "$2" = flash ]; then $EIPS -f -g "$1"; else $EIPS -g "$1"; fi
+}
+
+# A one-line note at the foot of the screen ($2 = up for the line above it).
+note() {
+  if [ "$INPUT" = touch ]; then
+    if [ "$2" = up ]; then "$FBINK" -q -pm -y -3 "$1"; else "$FBINK" -q -pm -y -2 "$1"; fi
+  elif [ "$2" = up ]; then $EIPS 1 38 "  $1  "; else $EIPS 1 39 "  $1  "; fi
+}
+
+# Stop and restart the Kindle's own reading software, which otherwise draws over us and takes the input.
+ui_stop() {
+  if [ "$INPUT" = touch ]; then
+    stop lab126_gui >/dev/null 2>&1
+  else
+    /etc/init.d/framework stop
+    # The web reader and browser outlive the framework and grab the page keys, so they go too.
+    /etc/init.d/webreaderd stop >/dev/null 2>&1
+    /etc/init.d/browserd stop >/dev/null 2>&1
+  fi
+}
+ui_start() {
+  if [ "$INPUT" = touch ]; then
+    start lab126_gui >/dev/null 2>&1
+  else
+    /etc/init.d/browserd start
+    /etc/init.d/webreaderd start
+    /etc/init.d/framework start
+  fi
+}
 export TZ="${POSIX_TZ:-UTC0}" # the Kindle clock is UTC; this names editions by your local date
 
 log() { echo "$(date '+%F %T') $*"; }
 
+# A touch screen shows a live/paper switch, so each request says which mode this is.
+modeq() {
+  [ "$INPUT" = touch ] || return 0
+  if [ -n "$LIVEPID" ]; then echo "&mode=live"; else echo "&mode=paper"; fi
+}
+
 # Ask the server for the screen after key $1 into file $2 ($3: extra query, e.g. &peek=1). Sends the battery level.
 fetch() {
-  "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI&k=$1${BATT:+&b=$BATT}$3" 2>/dev/null && mv "$2.part" "$2"
+  "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI$(modeq)&k=$1${BATT:+&b=$BATT}$3$TAPQ" 2>/dev/null && mv "$2.part" "$2"
 }
 
 # Page draws. Waking up and the hourly page flash the whole screen ($2 = clean). For page turns the server decides
@@ -43,7 +142,13 @@ fetch() {
 # the next /live.tar, and small changes never flash. Without FBInk, turns flash as they always did.
 draw() {
   lock
-  if [ "$2" = clean ] || grep -q stoppress-flash "$1" 2>/dev/null || { [ -z "$FBINK" ] && [ "$2" = full ]; }; then $EIPS -f -g "$1"; else $EIPS -g "$1"; fi
+  if [ "$2" = clean ] || grep -q stoppress-flash "$1" 2>/dev/null || { [ -z "$FBINK" ] && [ "$2" = full ]; }; then
+    put "$1" flash
+  elif grep -q stoppress-fast "$1" 2>/dev/null; then
+    put "$1" fast
+  else
+    put "$1"
+  fi
   unlock
 }
 
@@ -60,8 +165,8 @@ draw() {
 # A press holds /tmp/busy until the server has its new screen, and draws hold /tmp/drawlock, so nothing stamps
 # old content onto a new page.
 LD=/tmp/live
-LIVE=$(echo "$DASH_URL" | sed 's#/kindle\.png#/live.tar#')
-ATLAS=$(echo "$DASH_URL" | sed 's#/kindle\.png#/atlas.tar#')
+LIVE="$(url live.tar)$DEVQ"
+ATLAS="$(url atlas.tar)$DEVQ"
 LIVEPID=
 
 # A lock left by a killed loop would freeze the page keys, so a long wait (about 2 s) takes it over.
@@ -90,7 +195,7 @@ live_poll() {
   g=$(gen)
   rm -rf "$LD/new"
   mkdir -p "$LD/new"
-  "$XH" -d -q --timeout 8 --verify "$CA" -o "$LD/live.tar" get "$LIVE" 2>/dev/null &&
+  "$XH" -d -q --timeout 8 --verify "$CA" -o "$LD/live.tar" get "$LIVE$(modeq)" 2>/dev/null &&
     tar -xf "$LD/live.tar" -C "$LD/new" 2>/dev/null && [ -s "$LD/new/manifest.txt" ] || return 1
   lock
   if [ ! -e /tmp/busy ] && [ "$g" = "$(gen)" ]; then
@@ -118,14 +223,20 @@ stamp() {
   set -- "$1" "$2" $xy
   flash=
   [ $((n % 60)) = 59 ] && flash=-f
-  $FBINK -q $flash -g "file=$LD/atlas/d$2.png,x=$3,y=$4"
+  # (the newer driver ticks with DU, its quick black-and-white update; the server draws those digits 1-bit)
+  if [ "$INPUT" = touch ] && [ -z "$flash" ]; then
+    $FBINK -q -W DU -g "file=$LD/atlas/d$2.png,x=$3,y=$4"
+  else
+    $FBINK -q $flash -g "file=$LD/atlas/d$2.png,x=$3,y=$4"
+  fi
   eval "LAST_$1=$2; CNT_$1=$((n + 1))"
 }
 
 # Flash strip $1 (0-7) of what's on screen now, unless a page is going up.
+STRIP=$(((SH + 7) / 8))
 roll() {
   lock
-  [ ! -e /tmp/busy ] && [ "$gseen" = "$(gen)" ] && $FBINK -q -f -s "top=$(($1 * 100)),left=0,width=600,height=100"
+  [ ! -e /tmp/busy ] && [ "$gseen" = "$(gen)" ] && $FBINK -q -f -s "top=$(($1 * STRIP)),left=0,width=$SW,height=$STRIP"
   unlock
 }
 
@@ -148,6 +259,7 @@ tick() {
 }
 
 live_loop() {
+  LIVEPID=self # (we are the live loop: modeq, asked from in here, should say so)
   mkdir -p "$LD/atlas"
   until [ -s "$LD/atlas/d99.png" ]; do
     "$XH" -d -q --timeout 20 --verify "$CA" -o "$LD/atlas.tar" get "$ATLAS" 2>/dev/null &&
@@ -173,7 +285,8 @@ live_loop() {
     fi
     tick
     [ $((now - changed)) -ge 1245 ] && changed=$((now - 45)) && band=-1 # left alone: roll again every 20 minutes
-    if [ "$band" -lt 8 ] && [ $((now - changed)) -ge 45 ]; then
+    # (keys only: the newer driver doesn't need the roller, and strips blinking mid-read look like a fault)
+    if [ "$INPUT" = keys ] && [ "$band" -lt 8 ] && [ $((now - changed)) -ge 45 ]; then
       band=$((band + 1))
       [ "$band" -lt 8 ] && roll "$band"
     fi
@@ -202,11 +315,16 @@ stop_live() {
 
 # While you read, fetch (without applying) the screens the likely next presses give, so a flip only has to draw.
 prefetch() {
-  for k in next down prev up; do
+  if [ -n "$ARMQ" ]; then # something is framed: fetch what a second tap on it opens, first
+    TAPQ=$ARMQ
+    fetch tap /tmp/pre.arm.png "&peek=1"
+    TAPQ=
+  fi
+  for k in $PREKEYS; do
     fetch "$k" "/tmp/pre.$k.png" "&peek=1" || return
   done
   # Where this screen is in the offline copy, so losing Wi-Fi carries on from here.
-  "$XH" -d -q --timeout 12 --verify "$CA" -o /tmp/bookpos.part get "$(echo "$DASH_URL" | sed 's#/kindle\.png#/bookpos#')" 2>/dev/null &&
+  "$XH" -d -q --timeout 12 --verify "$CA" -o /tmp/bookpos.part get "$(url bookpos)" 2>/dev/null &&
     mv /tmp/bookpos.part /tmp/bookpos
 }
 
@@ -229,11 +347,17 @@ show() {
 
 _show() {
   stop_prefetch
-  BATT=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+  bnow=$(date +%s) # the battery level is asked for at most every two minutes: it's slow to ask
+  if [ $((bnow - ${BATT_AT:-0})) -ge 120 ]; then
+    BATT=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+    BATT_AT=$bnow
+  fi
   if [ -s "/tmp/pre.$1.png" ]; then
     draw "/tmp/pre.$1.png" "$2"
     # Now make the press real on the server; its screen is the one already drawn.
     fetch "$1" /tmp/ui.png || fetch "$1" /tmp/ui.png || log "commit failed for $1"
+    # (a tap drawn from a guess: if the server's answer differs, that's the truth)
+    if [ "$1" = tap ] && ! cmp -s /tmp/pre.tap.png /tmp/ui.png; then draw /tmp/ui.png "$2"; fi
   elif fetch "$1" /tmp/ui.png; then
     draw /tmp/ui.png "$2"
   else
@@ -242,7 +366,7 @@ _show() {
     if [ -s "$BOOK/p001.png" ]; then
       go_offline "$1"
     else
-      $EIPS 1 39 "  No connection - will retry  "
+      note "No connection - will retry"
     fi
     return 1
   fi
@@ -261,7 +385,7 @@ fetch_offline() {
   now=$(date +%s)
   last=$(cat "$stamp" 2>/dev/null || echo 0)
   [ $((now - last)) -ge 3000 ] || return 0
-  url=$(echo "$DASH_URL" | sed 's#/kindle\.png#/offline.tar#')
+  url="$(url offline.tar)$DEVQ"
   tar="$DIR/offline.tar"
   if "$XH" -d -q --timeout 180 --verify "$CA" -o "$tar.part" get "$url" 2>/dev/null; then
     rm -rf "$BOOK.new"
@@ -279,7 +403,7 @@ fetch_offline() {
 }
 
 offline_draw() {
-  $EIPS -f -g "$BOOK/$(printf 'p%03d.png' "$OPAGE")"
+  put "$BOOK/$(printf 'p%03d.png' "$OPAGE")" flash
 }
 
 # Switch to the offline copy at the page matching where we were ($1: the key that failed; home and the sleep
@@ -336,11 +460,17 @@ settle() {
 
 # Before sleeping, clean the page gently: one 100-row strip at a time, each blinking once in place.
 sweep() {
+  if [ "$INPUT" = touch ] && [ "$OFFLINE" != 1 ]; then # one clean flash of what's there; nobody is looking
+    lock
+    "$FBINK" -q -f -s
+    unlock
+    return
+  fi
   [ -n "$FBINK" ] && [ "$OFFLINE" != 1 ] || return 0
   strip=0
   while [ $strip -lt 8 ]; do
     lock
-    $FBINK -q -f -s "top=$((strip * 100)),left=0,width=600,height=100"
+    $FBINK -q -f -s "top=$((strip * STRIP)),left=0,width=$SW,height=$STRIP"
     unlock
     strip=$((strip + 1))
     sleep 1
@@ -366,12 +496,24 @@ power_reader() {
   done
 }
 
+# Touch Kindles: touch.lua (the Kindle's own Lua) turns the screen's events into "tap x y time",
+# "swipe <direction> x y time" and "hold x y tenths" lines, which go to the same queue as key presses.
+touch_reader() {
+  lua "$DIR/touch.lua" "$TOUCH_DEV" 2>/dev/null | while read -r line; do
+    echo "$line" >$FIFO
+  done
+}
+
 start_readers() {
   rm -f $FIFO
   mkfifo $FIFO
   exec 3<>$FIFO # held open both ways: reads block instead of hitting end-of-file
-  key_reader /dev/input/event0 &
-  key_reader /dev/input/event1 &
+  if [ "$INPUT" = touch ]; then
+    touch_reader &
+  else
+    key_reader /dev/input/event0 &
+    key_reader /dev/input/event1 &
+  fi
   power_reader &
 }
 
@@ -390,6 +532,7 @@ arm_idle() {
 
 # Switch live/paper mode from the keys, and say so for a few seconds at the foot of the screen.
 toggle_mode() {
+  [ -n "$SETTLE" ] && kill "$SETTLE" 2>/dev/null # its answer would be drawn for the old mode
   if [ -n "$LIVEPID" ]; then
     echo paper >"$DIR/mode"
     stop_live
@@ -407,16 +550,17 @@ toggle_mode() {
     arm_idle
   fi
   log "$note"
+  [ "$1" = quiet ] && return
   lock
-  $EIPS 1 38 "  $note  "
+  note "$note" up
   unlock
-  (sleep 4; lock; $EIPS -g /tmp/ui.png; unlock) &
+  (sleep 4; lock; put /tmp/ui.png; unlock) &
 }
 
 interactive() {
   log "awake"
   entered=$(date +%s)
-  $EIPS 1 39 "  Waking up - one moment...  "
+  note "Waking up - one moment..."
   OFFLINE=0
   # After a suspend Wi-Fi takes a few seconds. Out of range, give up sooner and use the offline copy.
   n=0
@@ -430,10 +574,70 @@ interactive() {
   arm_idle
   while true; do
     # BusyBox 1.7 ash's read fails when a signal lands (e.g. the idle timer we just killed); just read again.
-    read -r ev code at <&3 || continue
+    read -r ev code at a4 a5 <&3 || continue
+    # Touch lines carry more fields: "tap x y time", "swipe dir x y time", "hold x y tenths".
+    case "$ev" in
+      tap) tx=$code; ty=$at; at=$a4 ;;
+      swipe) tx=$at; ty=$a4; at=$a5 ;;
+      hold) tx=$code; ty=$at; at=$(date +%s) ;;
+    esac
     # Ignore anything queued before we woke (keys hit while asleep).
     [ "${at:-0}" -lt "$entered" ] && continue
     case "$ev" in
+      tap)
+        log "tap $tx $ty"
+        arm_idle
+        if [ "$OFFLINE" = 1 ]; then
+          # No server to ask what was tapped: the left third goes back a page, the top strip retries the server.
+          if [ "$ty" -lt $((SH / 13)) ]; then press home full
+          elif [ "$tx" -lt $((SW / 3)) ]; then press prev full
+          else press next full; fi
+        elif [ "$ty" -ge "$NAV_Y" ] && [ "$tx" -lt "$NAV_ARROW" ]; then
+          ack "$tx" "$ty"
+          press prev full
+        elif [ "$ty" -ge "$NAV_Y" ] && [ "$tx" -ge $((SW - NAV_ARROW)) ]; then
+          ack "$tx" "$ty"
+          press next full
+        else
+          ack "$tx" "$ty"
+          # A second tap near the first one, with its screen already fetched: draw it now, then tell the server.
+          if [ -n "$ARMQ" ] && [ -s /tmp/pre.arm.png ] &&
+            [ $(((tx - ARMX) * (tx - ARMX) + (ty - ARMY) * (ty - ARMY))) -lt 3600 ]; then
+            mv /tmp/pre.arm.png /tmp/pre.tap.png
+          fi
+          ARMQ=
+          TAPQ="&x=$tx&y=$ty"
+          press tap full
+          TAPQ=
+          if grep -q stoppress-fast /tmp/ui.png 2>/dev/null; then
+            # The tap framed something. Fetch what tapping it again opens (the prefetch running now started
+            # before we knew, so start it again).
+            ARMQ="&x=$tx&y=$ty"; ARMX=$tx; ARMY=$ty
+            stop_prefetch
+            prefetch &
+            PREFETCH=$!
+          else
+            unack
+          fi
+          if grep -q stoppress-mode /tmp/ui.png 2>/dev/null; then
+            toggle_mode quiet
+            show none full
+          fi
+        fi ;;
+      swipe)
+        log "swipe $code"
+        ARMQ=
+        arm_idle
+        case "$code" in
+          left) press next full ;;
+          right) press prev full ;;
+          down) press home full ;;
+          up) press menu full ;;
+        esac ;;
+      hold)
+        log "hold $tx $ty"
+        arm_idle
+        if [ "$tx" -lt $((SW / 5)) ] && [ "$ty" -lt $((SH / 6)) ]; then exit_to_library; else toggle_mode; fi ;;
       idle)
         [ "$code" = "$GEN" ] || continue
         log "idle, going to sleep"; disarm_idle; sweep; return ;;
@@ -475,7 +679,7 @@ fetch_edition() {
   now=$(date +%s)
   last=$(cat "$stamp" 2>/dev/null || echo 0)
   [ $((now - last)) -ge 3600 ] || [ "$(date +%H%M)" -ge 2345 ] || return 0
-  url=$(echo "$DASH_URL" | sed 's#/kindle\.png#/edition.mobi#')
+  url=$(url edition.mobi)
   out="/mnt/us/documents/${EDITION_NAME:-Stop Press} $(date +%Y-%m-%d).mobi"
   if "$XH" -d -q --timeout 120 --verify "$CA" -o "$out.part" get "$url" 2>/dev/null; then
     mv "$out.part" "$out"
@@ -496,7 +700,7 @@ asleep() {
   while true; do
     secs=$("$DIR/next-wakeup" --schedule="$REFRESH_SCHEDULE" --timezone="$TIMEZONE")
     if [ "$secs" -gt 3600 ]; then
-      $EIPS -f -g "$DIR/sleeping.png" # overnight
+      put "$DIR/sleeping.png" flash # overnight
     else
       "$DIR/wait-for-wifi.sh" "$WIFI_TEST_IP" >/dev/null 2>&1
       if show auto clean noprefetch; then
@@ -521,21 +725,28 @@ asleep() {
 
 exit_to_library() {
   log "keyboard key: back to the Kindle library"
-  $EIPS -c
-  $EIPS 8 18 "Back to your Kindle library..."
-  $EIPS 8 20 "(about half a minute)"
-  $EIPS 4 23 "KUAL > Stop Press > Start the paper"
-  $EIPS 4 24 "brings the paper back."
+  if [ "$INPUT" = touch ]; then
+    "$FBINK" -q -c -f
+    "$FBINK" -q -pm -y 12 "Back to your Kindle library..."
+    "$FBINK" -q -pm -y 14 "(about half a minute)"
+    "$FBINK" -q -pm -y 17 "KUAL > Stop Press > Start the paper"
+    "$FBINK" -q -pm -y 18 "brings the paper back."
+  else
+    $EIPS -c
+    $EIPS 8 18 "Back to your Kindle library..."
+    $EIPS 8 20 "(about half a minute)"
+    $EIPS 4 23 "KUAL > Stop Press > Start the paper"
+    $EIPS 4 24 "brings the paper back."
+  fi
   echo 0 >$RTC
   disarm_idle
   stop_live
   stop_prefetch
   pkill -f "tail -n 0 -f /var/log/messages"
   pkill -f "dd if=/dev/input/event"
+  pkill -f "$DIR/touch.lua"
   lipc-set-prop com.lab126.powerd preventScreenSaver 0
-  /etc/init.d/browserd start
-  /etc/init.d/webreaderd start
-  /etc/init.d/framework start
+  ui_start
   # Stop our own reader loops last (they share our command line).
   pkill -f "sh /mnt/us/stop-press/paper.sh"
   exit 0
@@ -546,12 +757,14 @@ mkdir -p "$DIR/state"
 rm -f /tmp/busy
 rmdir /tmp/drawlock 2>/dev/null
 trap '' HUP
+if [ "$INPUT" = touch ] && [ -z "$FBINK" ]; then
+  log "no FBInk found: touch Kindles need it (it comes with NiLuJe's USBNetwork package)"
+  exit 1
+fi
+log "device: $INPUT, ${SW}x${SH}, fbink ${FBINK:-none}"
 trap '' TERM # stopping the Kindle UI also signals whatever KUAL launched, which includes us
-/etc/init.d/framework stop
+ui_stop
 trap - TERM
-# The web reader and browser outlive the framework and grab the page keys, so they go too.
-/etc/init.d/webreaderd stop >/dev/null 2>&1
-/etc/init.d/browserd stop >/dev/null 2>&1
 lipc-set-prop com.lab126.powerd preventScreenSaver 1
 start_readers
 while true; do

@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from paper import archive, edition, history, offline, pages, periodical, sources
 from paper.config import SETTINGS as S
+from paper.draw import KINDLE4, crisp, current_device, device, reset_device, use_device
 from paper.pages import PAGES, now, page_for
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -53,6 +54,18 @@ async def lifespan(_app):
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _device_from_query(request: Request, call_next):
+    """Every Kindle request may say its screen size, dev=WIDTHxHEIGHT (the Kindle 4's 600x800 if not). Pages
+    made while answering it are drawn for that screen."""
+    q = request.query_params
+    token = use_device(device(q.get("dev", ""), q.get("epd") == "mxc"))
+    try:
+        return await call_next(request)
+    finally:
+        reset_device(token)
 
 
 def _no_demo():
@@ -94,11 +107,12 @@ KEYS = {"next", "prev", "up", "down", "left", "right", "select", "back", "home",
 
 @app.get("/ui.png")
 def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: int | None = Query(None, ge=0, le=100),
-           x: int = Query(0, ge=0, le=600), y: int = Query(0, ge=0, le=800), s: str = Query("", max_length=40),
-           touch: int = Query(0)):
+           x: int = Query(0, ge=0, le=3200), y: int = Query(0, ge=0, le=3200), s: str = Query("", max_length=40),
+           touch: int = Query(0), epd: str = Query("", max_length=8), mode: str = Query("", max_length=8)):
     """Interactive mode: apply one button press and return the screen to show. peek=1 draws the screen that press
     would give without making it (the Kindle prefetches with it). b is the Kindle's battery level. k=tap with x, y
-    (in the 600x800 page) is a touch-screen tap. s identifies the reader when several share the server (the demo)."""
+    is a touch-screen tap: in device pixels when dev= is given, else in the 600x800 page. s identifies the reader
+    when several share the server (the demo)."""
     _check(t)
     if k not in KEYS:
         raise HTTPException(status_code=400)
@@ -106,25 +120,35 @@ def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: 
 
     if b is not None and not S.demo:
         pages.DEVICE["battery"] = b
-    p, view = ui.handle(k, peek=bool(peek), x=x, y=y, sid=s if S.demo else "", touch=bool(touch))
+    dev = current_device()
+    if k == "tap" and dev != KINDLE4:
+        x, y = (round(v) for v in dev.from_px(x, y))
+    p, view = ui.handle(k, peek=bool(peek), x=x, y=y, sid=s if S.demo else "", touch=bool(touch),
+                        mode=mode if mode in ("live", "paper") else "")
     whole = False
     if not S.demo:  # what the Kindle now shows, for live mode and the smart flash
         new = p.img.convert("L")
-        if _shown["img"] is not None:
-            whole, boxes = _ink_due(_shown["img"], new, commit=not peek)
-            if not peek and not whole:
-                _clean.extend(_ghost_boxes(_shown["img"], new))
+        if dev.mxc:
+            new = crisp(new, p.photos)
+        shown = _shown.get(dev.name)
+        if shown is not None and shown.size == new.size:
+            whole, boxes = _ink_due(shown, new, commit=not peek, soft=epd == "mxc")
+            if not peek and not whole and epd != "mxc":
+                _clean.extend(_ghost_boxes(shown, new))
                 _clean.extend(boxes)
         if not peek:
-            _shown["img"] = new
+            _shown[dev.name] = new
     buf = io.BytesIO()
     info = None
-    if whole:  # the Kindle greps the PNG for this text chunk and draws the page with one flash
+    marks = (["flash"] if whole else []) + sorted(p.fx)
+    if marks:  # the Kindle greps the PNG for these text chunks: flash = draw with one whole flash, fast = only a
+        # highlight changed (the quick black-and-white update will do), mode = switch live/paper mode
         from PIL.PngImagePlugin import PngInfo
 
         info = PngInfo()
-        info.add_text("stoppress-flash", "1")
-    p.img.save(buf, format="PNG", optimize=True, pnginfo=info)
+        for m in marks:
+            info.add_text(f"stoppress-{m}", "1")
+    new.save(buf, format="PNG", compress_level=4, pnginfo=info)  # (not optimize: it costs a tap 100 ms)
     return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store", "X-View": view})
 
 
@@ -134,7 +158,7 @@ def ui_png(t: str = Query(""), k: str = Query("none"), peek: int = Query(0), b: 
 # whatever else changed on its screen, as small PNG patches. A ghost ledger counts the no-flash redraws on each
 # 40px square; a patch over squares that have had too many is sent as a flash of just that box, which the change
 # itself disguises, so the page as a whole never flashes.
-_shown: dict = {"img": None}  # the screen the Kindle shows now (greyscale), as far as we know
+_shown: dict = {}  # screen size -> the screen that Kindle shows now (greyscale), as far as we know
 DEBT_CELL, DEBT_LIMIT = 40, 8
 _debt: dict[tuple[int, int], int] = {}
 STRIP = 16  # rows per strip when looking for changes
@@ -162,9 +186,8 @@ def _changed_boxes(old, new) -> list[tuple[int, int, int, int]]:
     columns, with neighbouring strips merged."""
     from PIL import ImageChops
 
-    from paper.draw import H, W
-
     diff = ImageChops.difference(old, new)
+    W, H = diff.size  # device pixels
     boxes: list[list[int]] = []
     for y in range(0, H, STRIP):
         bb = diff.crop((0, y, W, min(H, y + STRIP))).getbbox()
@@ -211,18 +234,27 @@ def _ghost_boxes(old, new) -> list[tuple[int, int, int, int]]:
 INK_TURN = 250    # changed pixels in one turn, per 1600-pixel square
 INK_LIMIT = 600   # changed pixels added up over several turns
 INK_WHOLE = 0.15  # share of squares due at once that makes it a whole-page flash
+# Kindles with the newer display driver (epd=mxc: the Touch, Paperwhite and later) redraw a page cleanly without a
+# flash far more often, as their own reading software does, and a late flash of part of the page looks like a
+# fault there. So for them nothing flashes after a turn: a square is due once it has had INK_SOFT of ink in all, or
+# INK_HEAVY in one turn (a photo, a headline or a black bar wiped), and when enough squares are due the turn goes
+# up with one whole flash (about every second or third change of section, rarely while paging through text).
+# They have no ink roller, so a pause forgets nothing: only a flash clears the count.
+INK_SOFT = 500
+INK_HEAVY = 700
 INK_QUIET = 60    # seconds without a turn after which the roller has cleaned everything
 _ink: dict[tuple[int, int], int] = {}
 _last_turn = {"t": 0.0}
 
 
-def _ink_due(old, new, commit=True) -> tuple[bool, list[tuple[int, int, int, int]]]:
-    """(whole-page flash?, boxes to flash after). commit=False (a prefetch) decides without counting anything."""
+def _ink_due(old, new, commit=True, soft=False) -> tuple[bool, list[tuple[int, int, int, int]]]:
+    """(whole-page flash?, boxes to flash after). commit=False (a prefetch) decides without counting anything.
+    soft=True is the newer display driver's rule (see INK_SOFT): never any boxes."""
     from PIL import Image, ImageChops
 
     now = time.time()
     if commit:
-        if now - _last_turn["t"] > INK_QUIET:
+        if now - _last_turn["t"] > INK_QUIET and not soft:
             _ink.clear()
         _last_turn["t"] = now
     ink = _ink if commit else dict(_ink)
@@ -243,7 +275,10 @@ def _ink_due(old, new, commit=True) -> tuple[bool, list[tuple[int, int, int, int
             if not n:
                 continue
             total = ink.get((cx, cy), 0) + n
-            if n >= INK_TURN or total >= INK_LIMIT:
+            if soft:
+                ink[(cx, cy)] = total
+                due += total >= INK_SOFT or n >= INK_HEAVY
+            elif n >= INK_TURN or total >= INK_LIMIT:
                 hot.paste(255, (cx * DEBT_CELL, cy * DEBT_CELL, min(W, (cx + 1) * DEBT_CELL), min(H, (cy + 1) * DEBT_CELL)))
                 ink.pop((cx, cy), None)
                 due += 1
@@ -252,6 +287,8 @@ def _ink_due(old, new, commit=True) -> tuple[bool, list[tuple[int, int, int, int
     if due >= INK_WHOLE * cw * ch:
         ink.clear()
         return True, []
+    if soft:
+        return False, []
     return False, (_changed_boxes(Image.new("L", (W, H), 0), hot) if due else [])
 
 
@@ -272,21 +309,23 @@ def _flash_due(box) -> bool:
 
 @app.get("/atlas.tar")
 def atlas_tar(t: str = Query("")):
-    """The live countdown's digits: d00.png ... d99.png, each one two-digit cell exactly as the page draws it."""
+    """The live countdown's digits: d00.png ... d99.png, each one two-digit cell exactly as the page draws it
+    (at the dev= screen's scale)."""
     _check(t)
     _no_demo()
     from PIL import Image
 
     files = {}
+    dev = current_device()
     for n in range(100):
-        im = Image.new("L", (2 * pages.CELL_W, pages.CELL_H), 255)
-        pages.digit_cell(im, 0, 0, f"{n:02d}")
+        im = Image.new("L", pages.cell_size(dev), 255)
+        pages.digit_cell(im, 0, 0, f"{n:02d}", dev)
         files[f"d{n:02d}.png"] = _png_bytes(im)
     return Response(_tar(files), media_type="application/x-tar", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/live.tar")
-def live_tar(t: str = Query("")):
+def live_tar(t: str = Query(""), touch: int = Query(0), mode: str = Query("", max_length=8)):
     """manifest.txt says what the screen ticks and what to redraw:
          view <name>
          mode countdown <unix time> | mode clock 0 | mode none 0
@@ -299,14 +338,16 @@ def live_tar(t: str = Query("")):
 
     from paper import ui
 
-    p, view = ui.live_frame()
+    p, view = ui.live_frame(touch=bool(touch), mode=mode if mode in ("live", "paper") else "")
     new = p.img.convert("L")
+    if p.dev.mxc:
+        new = crisp(new, p.photos)
     lv = pages.LIVE.get(view) or {}
     cells = lv.get("cells") or []
     mode = lv.get("mode") or ("none", 0)
     lines = [f"view {view}", f"mode {mode[0]} {mode[1]}"] + [f"cell {n} {x} {y}" for n, x, y in cells]
     files = {}
-    old = _shown["img"]
+    old = _shown.get(p.dev.name)
     while _clean:  # ghosts from the last page turn: flash just those boxes, with what's there now
         box = _clean.pop(0)
         name = f"g{len(files)}.png"
@@ -316,16 +357,17 @@ def live_tar(t: str = Query("")):
             for cy in range(box[1] // DEBT_CELL, (box[3] - 1) // DEBT_CELL + 1):
                 _debt[(cx, cy)] = 0
                 _ink.pop((cx, cy), None)
-    if old is not None:
+    if old is not None and old.size == new.size:
         a, b = old.copy(), new.copy()
+        cw, ch = pages.cell_size(p.dev)
         for _, x, y in cells:  # the Kindle draws these itself
             for im in (a, b):
-                ImageDraw.Draw(im).rectangle([x, y, x + 2 * pages.CELL_W - 1, y + pages.CELL_H - 1], fill=255)
+                ImageDraw.Draw(im).rectangle([x, y, x + cw - 1, y + ch - 1], fill=255)
         for i, box in enumerate(_changed_boxes(a, b)[:12]):
             name = f"p{i}.png"
             files[name] = _png_bytes(new.crop(box))
             lines.append(f"patch {name} {box[0]} {box[1]} {1 if _flash_due(box) else 0}")
-    _shown["img"] = new
+    _shown[p.dev.name] = new
     files = {"manifest.txt": ("\n".join(lines) + "\n").encode(), **files}
     return Response(_tar(files), media_type="application/x-tar", headers={"Cache-Control": "no-store"})
 

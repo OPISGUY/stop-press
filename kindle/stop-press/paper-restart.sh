@@ -3,5 +3,6 @@
 pkill -f "sh /mnt/us/stop-press/paper.sh"
 pkill -f "tail -n 0 -f /var/log/messages"
 pkill -f "dd if=/dev/input/event"
+pkill -f "/mnt/us/stop-press/touch.lua"
 sleep 1
 sh /mnt/us/stop-press/paper-start.sh

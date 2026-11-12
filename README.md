@@ -1,15 +1,16 @@
 # Stop Press
 
-**A newspaper for your old e-reader.** Stop Press turns a jailbroken Kindle 4 into a broadsheet that updates itself,
-and runs in the web browser of most other e-readers, old phones and tablets ([Other devices](#other-devices)).
-It has a front page with a lead photo, world news, markets with 30-day sparklines, a weather and diary page, and full
-articles with their photos that you turn with the page keys. Each night it also files a proper Kindle "periodical"
-edition into your library.
+**A newspaper for your old e-reader.** Stop Press turns a jailbroken Kindle into a broadsheet that updates itself.
+Version 2.0 runs on Kindles with keys (the Kindle 4) and on touch Kindles (the Kindle Touch, Paperwhite and later),
+drawn at each screen's own resolution, and still runs in the web browser of most other e-readers, old phones and
+tablets ([Other devices](#other-devices)). It has a front page with a lead photo, world news, markets with
+pre-market prices and 30-day sparklines, a weather and diary page, and full articles with their photos. Each night
+it also files a proper Kindle "periodical" edition into your library.
 
 ![Front page, an article, markets and your day](docs/screens/hero.png)
 
 **Why:** old e-readers have perfectly good screens but no longer get updates, so most of them end up in landfill.
-Stop Press gives a "dead" Kindle 4 a daily job instead. It started as part of a small computer-donation project
+Stop Press gives a "dead" Kindle a daily job instead. It started as part of a small computer-donation project
 that keeps devices out of the bin.
 
 **Try it now** on your e-reader, phone or computer, no setup:
@@ -20,28 +21,41 @@ summaries rather than full articles. Your own server can use any feeds you like.
 
 ## Two ways to run it
 
-| | In any e-reader's browser | On a jailbroken Kindle 4 |
+| | In any e-reader's browser | On a jailbroken Kindle |
 |---|---|---|
-| Devices | Most Kindles (Touch, Paperwhite, Voyage, Oasis, basic), Kobo, Boox, old phones and tablets | Kindle 4 (2011, non-touch). Kindle 5 probably works too, [please test](https://github.com/OPISGUY/stop-press/issues/1) |
+| Devices | Most Kindles, Kobo, Boox, old phones and tablets | Kindle 4 (keys), and touch Kindles: Kindle Touch, Paperwhite and later ([which ones](#which-kindles)) |
 | Setup | Run the server, open `/view` and bookmark it. No jailbreak | Run the server, jailbreak, copy a folder over USB |
-| Controls | Tap a headline to read it, tap the sides to turn pages | Page keys, 5-way, Home, Back, Menu |
+| Controls | Tap a headline to read it, tap the sides to turn pages | Keys on the Kindle 4; taps, swipes and a navigation bar on touch Kindles |
+| Sharpness | Drawn at 600×800 and scaled | Drawn at the screen's own size (758×1024 on a Paperwhite 1, for example) |
 | Battery | Stays awake, so keep it near a charger | Sleeps between hourly refreshes; weeks on a charge |
 | Out of Wi-Fi range | Stops updating | Carries on from a saved copy |
 | Daily edition in the library | No | Yes |
 
-Want the full version on another model? [The pinned issue](https://github.com/OPISGUY/stop-press/issues/1) ranks
-them easiest first, with a checklist for each.
+### Which Kindles
+
+| Kindle | State |
+|---|---|
+| Kindle 4 (2011, non-touch), firmware 4.1.x | **Tested.** Where Stop Press began |
+| Paperwhite 1 (2012), firmware 5.6.1.1 | **Tested.** Touch, 758×1024 |
+| Kindle Touch, Paperwhite 2 and 3, Kindle 7 and 8, Voyage, Oasis and later | **Should work, not yet tested.** Same display driver and the same touch code; the screen size is read from the device. Please [say how it goes](https://github.com/OPISGUY/stop-press/issues/3) |
+| Kindle 5 (2012, non-touch) | Probably works as a Kindle 4. [Please test](https://github.com/OPISGUY/stop-press/issues/1) |
+| Kindle Keyboard and older | Not supported (different keys); use the browser version |
+
+The device has to be one you can jailbreak: see the [Kindle Modding wiki](https://kindlemodding.org/) for what your
+model and firmware allow. A touch Kindle also needs KUAL, MRPI and FBInk (below).
 
 ## What it does
 
-The Kindle stays simple: it sends each button press to a small server you run, then draws the 600×800 PNG that comes
-back. The server keeps everything else, including what's on screen, what you've read and how far you got. It runs in
+The Kindle stays simple: it sends each key press or tap to a small server you run, then draws the PNG that comes
+back, made at that Kindle's own screen size. The server keeps everything else, including what's on screen, what you've read and how far you got. It runs in
 one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
 
 - **Readable on e-ink:** set in Source Serif, Playfair Display and Inter, with a blackletter masthead. Photos are
   dithered to the Kindle's 16 greys, so they print like newsprint.
-- **Interactive:** the page keys, the 5-way, Home, Back and Menu all work (see [Controls](#controls)). Page turns
-  appear almost at once, because the Kindle fetches the likely next screens while you read.
+- **Interactive:** on a Kindle 4 the page keys, the 5-way, Home, Back and Menu all work. On a touch Kindle every
+  headline, market, tab and chart range can be tapped, with a navigation bar along the foot (see
+  [Controls](#controls)). Page turns appear almost at once, because the Kindle fetches the likely next screens
+  while you read.
 - **Full articles:** every story the paper shows is saved with its full text and in-article photos, so it stays
   readable after it drops off the front page. Ticks mark what you've read, and the index offers "Continue reading".
 - **Daily edition:** a real Kindle periodical (`.mobi`, built with Calibre), with sections, an article list and
@@ -51,7 +65,9 @@ one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
 - **Sleeps properly:** after 3 minutes, or a press of the power button, it shows the front page and suspends.
   It wakes every hour to refresh. A charge lasts weeks. Overnight it shows a "gone to press" screen.
 - **Boots into the paper** if you want it to (KUAL → Stop Press → Start at boot: on).
-- **Markets in depth:** your own watchlist (up to 60 shares, indices, currencies, crypto), paged. Open any of them
+- **Markets in depth:** your own watchlist (up to 60 shares, indices, currencies, crypto), paged in groups:
+  indices, AI & tech, shares, then currencies, crypto and commodities. A strip of US index futures and a
+  pre-market / after-hours column show where prices are heading outside the session. Open any row
   for its own screen: a chart over a day to five years, today's and the 52-week range, volume and its headlines.
   Edit the list from your phone at `/watchlist?t=<token>`: search for anything Yahoo Finance knows and add it.
 - **Yours to configure:** masthead, town, any RSS feeds, markets, your calendar, and your own numbers (any JSON URL)
@@ -70,9 +86,10 @@ one Docker container on a Raspberry Pi, a NAS, an old laptop or any cheap VPS.
   - **Any device with a web browser**, no jailbreak: other Kindles (Touch, Paperwhite, Voyage, Oasis, basic
     Kindles) through their Experimental Browser, Kobos, Boox and other Android e-readers, old phones and tablets.
     See [Other devices](#other-devices). Five minutes to set up.
-  - A **Kindle 4** (2011, the non-touch model with a 5-way pad and page keys on both sides) on firmware 4.1.x,
-    **jailbroken**, with **KUAL** installed, for the full version: it sleeps between refreshes, lasts weeks on a
-    charge, works out of Wi-Fi range and files a daily edition into the library.
+  - A **jailbroken Kindle** with **KUAL** installed, for the full version: it sleeps between refreshes, lasts
+    weeks on a charge, works out of Wi-Fi range and files a daily edition into the library. Either a **Kindle 4**
+    (2011, the non-touch model with a 5-way pad and page keys on both sides, firmware 4.1.x) or a **touch Kindle**
+    (Kindle Touch, Paperwhite or later) with FBInk. See [Which Kindles](#which-kindles).
 
 ## Beginners: download the app
 
@@ -83,8 +100,8 @@ bar on a Mac).
    for Windows, or `StopPress-macOS.zip` for a Mac (unzip it and drag StopPress into Applications). A Linux build,
    `StopPress-Linux`, is there too.
 2. Open it. Your web browser opens the settings page: set your town, time zone and, if you like, your calendar.
-3. Connect your e-reader. Type in the address the page shows, or scan its QR code. Kindle 4 owners follow
-   [section 2](#2-set-up-the-kindle-4) below; other devices are in [Other devices](#other-devices).
+3. Connect your e-reader. Type in the address the page shows, or scan its QR code. Jailbroken Kindle owners follow
+   [section 2](#2-set-up-the-kindle) below; other devices are in [Other devices](#other-devices).
 
 Good to know:
 
@@ -119,17 +136,23 @@ Without Docker: `cd server && pip install -r requirements.txt && uvicorn paper.a
 `PAPER_DATA_DIR` to a writable folder. Calibre's `ebook-convert` must be on the PATH for the `.mobi` edition. Without it,
 everything else still works.
 
-## 2. Set up the Kindle 4
+## 2. Set up the Kindle
 
 On any other device, skip this: open `http://<server>:8000/view?t=<token>` in its browser instead (see
 [Other devices](#other-devices)).
 
-1. **Jailbreak and install KUAL.** Follow NiLuJe's guide on MobileRead:
-   [the K4 jailbreak and snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030). Install the
-   jailbreak, then the Mobileread Kindlet Kit, then KUAL. Also install the **KUAL Helper** and use it to block OTA updates.
-   - **2025 gotcha:** the old Kindlet developer keystore expired in April 2025, so KUAL refuses to launch
-     ("not made by an authorized developer"). Install NiLuJe's re-signed KUAL 2.7.37 and its 2025 keystore, both
-     linked from that thread.
+1. **Jailbreak and install KUAL.**
+   - **Kindle 4:** follow NiLuJe's guide on MobileRead:
+     [the K4 jailbreak and snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030). Install the
+     jailbreak, then the Mobileread Kindlet Kit, then KUAL. Also install the **KUAL Helper** and use it to block
+     OTA updates.
+   - **Touch Kindles:** follow the [Kindle Modding wiki](https://kindlemodding.org/) for your model and firmware,
+     then install KUAL and MRPI from it. Then install NiLuJe's **USBNetwork** with MRPI (KUAL → Helper → Install
+     MR Packages): it brings FBInk, which a touch Kindle needs to draw the paper at all.
+   - **2025 gotcha:** the old Kindlet developer keystore expired in April 2025, so an old KUAL refuses to launch
+     ("not made by an authorized developer"). Use the current KUAL builds linked from those guides. On a
+     Paperwhite 1 the current packages need firmware 5.6.1.1: on older firmware they fail with the same message,
+     and updating the Kindle (the jailbreak survives) fixes it.
 2. **Get the helper binaries** (an ARM HTTP client, a cron calculator and a CA bundle) on your computer:
    ```bash
    sh kindle/fetch-binaries.sh
@@ -139,13 +162,16 @@ On any other device, skip this: open `http://<server>:8000/view?t=<token>` in it
 4. **Copy to the Kindle** over USB:
    - `kindle/stop-press/` → `/mnt/us/stop-press/` (the `stop-press` folder in the drive's root)
    - `kindle/extensions/stop-press/` → `/mnt/us/extensions/stop-press/`
-5. Eject, then **KUAL → Stop Press → Start the paper.**
-6. Optional: **KUAL → Stop Press → Start at boot: on** makes the Kindle open the paper by itself about a minute after
-   it switches on. This adds a small start-up script to the Kindle's system partition. **Start at boot: off** removes
-   it, and a file called `NO_AUTOSTART` in the `stop-press` folder skips it for as long as the file is there.
+5. Eject, then **KUAL → Stop Press → Start the paper.** The script works out which kind of Kindle it is on (keys
+   or touch, and the screen size) by itself.
+6. Optional, Kindle 4 only: **KUAL → Stop Press → Start at boot: on** makes the Kindle open the paper by itself
+   about a minute after it switches on. This adds a small start-up script to the Kindle's system partition.
+   **Start at boot: off** removes it, and a file called `NO_AUTOSTART` in the `stop-press` folder skips it for as
+   long as the file is there.
 
-Press the **keyboard key** to return to the normal Kindle library, and use KUAL → Stop Press to start the paper again.
-To recover a stuck device, hold power for about 20 seconds.
+To return to the normal Kindle library, press the **keyboard key** on a Kindle 4, or **hold a finger on the
+top-left corner** of a touch Kindle. Use KUAL → Stop Press to start the paper again. To recover a stuck device,
+hold power for about 20 seconds (40 on a Paperwhite).
 
 ## Live mode
 
@@ -153,7 +179,8 @@ If the Kindle is plugged in, it can stay awake and keep the page live instead of
 update in place every few seconds. The markets and stock screens count down to the next opening or closing bell
 (New York or London), ticking every second, without flashing.
 
-- **Switch it on or off:** press **Home twice** quickly. A note at the foot of the screen says which mode you're in.
+- **Switch it on or off:** press **Home twice** quickly on a Kindle 4, or tap the **LIVE / PAPER** label at the
+  top of a touch Kindle. A note says which mode you're in.
   You can also use **KUAL → Stop Press → Start in live mode (plugged in)** or **Start in paper mode (hourly)**.
 - **Power:** it only runs while the Kindle is charging or above 20% battery. Below that it goes back to hourly
   updates and sleeping.
@@ -167,20 +194,26 @@ update in place every few seconds. The markets and stock screens count down to t
   In live mode the screen is also cleaned gently 45 seconds after your last turn, and every 20 minutes, one strip
   at a time. In paper mode this gentle clean runs just before the Kindle sleeps.
 
+  Touch Kindles have a newer display driver that redraws cleanly far more often, so they follow a simpler rule:
+  nothing flashes after a turn, and one whole flash goes up with a turn once enough of the page has changed
+  (about every second or third change of section). Their pages are also sent in the panel's own 16 greys with
+  darker letter edges, which keeps small text sharp without a flash.
+
 **Live mode needs FBInk**, a small tool by NiLuJe that redraws one part of an e-ink screen at a time. It is free
 software under the GPLv3, and all credit for it goes to NiLuJe:
 [github.com/NiLuJe/FBInk](https://github.com/NiLuJe/FBInk).
 
-The easiest way to get it on a Kindle 4 is NiLuJe's **USBNetwork** package, which includes a ready-built FBInk for
-older Kindles at `/mnt/us/usbnet/bin/fbink`. Install it the same way as the jailbreak and KUAL: download the Kindle 4
+On a touch Kindle, FBInk is needed in either mode. The easiest way to get it is NiLuJe's **USBNetwork** package,
+which includes a ready-built FBInk at `/mnt/us/usbnet/bin/fbink`. On a touch Kindle install it with MRPI. On a
+Kindle 4 install it the same way as the jailbreak and KUAL: download the Kindle 4
 `Update_usbnetwork_*_k4_install.bin` from the Kindle 2/DX/3/4 section of [NiLuJe's snapshots thread](https://www.mobileread.com/forums/showthread.php?t=225030),
 copy it to the root of the Kindle over USB, then choose Menu → Settings → Menu → Update Your Kindle. `paper.sh` finds
 FBInk there, or at `/mnt/us/stop-press/fbink`, `/usr/bin/fbink` or `/mnt/us/libkh/bin/fbink` if you have it
 already.
 
 We don't bundle FBInk ourselves. Ready-built copies for older Kindles are only published on MobileRead, so we point
-you to NiLuJe's own downloads rather than redistribute them. Without FBInk the paper works as before, with a full
-flash on page turns, and live mode stays off.
+you to NiLuJe's own downloads rather than redistribute them. Without FBInk a Kindle 4 works as before, with a full
+flash on page turns, and live mode stays off; a touch Kindle won't start.
 
 ## Reading out of Wi-Fi range
 
@@ -200,6 +233,8 @@ The next time it wakes in range, it goes back to the live paper.
 
 ## Controls
 
+**Kindle 4 (keys)**
+
 | Button | On a page | In an article |
 |---|---|---|
 | Page keys (either side) | next / previous page | turn the page |
@@ -211,6 +246,20 @@ The next time it wakes in range, it goes back to the live paper.
 | Menu | all of today's articles | all articles |
 | Power | sleep (refreshes hourly; power wakes it straight into the paper) | same |
 | Keyboard key | back to the normal Kindle library | same |
+
+**Touch Kindles**
+
+| Touch | What it does |
+|---|---|
+| Tap a headline, a market or a card | First tap frames it, so you can see what you chose. Tap it again to open it |
+| Navigation bar along the foot | A tab for every section, and ◀ ▶ for the previous and next page |
+| Tap the masthead | Front page |
+| Tap a chart's range (1D, 1M, 1Y…) | Changes the chart at once |
+| Tap **LIVE / PAPER** at the top | Switches live mode on or off |
+| Swipe left / right | Next / previous page |
+| Swipe down / up | Front page / all of today's articles |
+| Hold a finger on the top-left corner | Back to the normal Kindle library |
+| Power | Sleep (refreshes hourly; power wakes it straight into the paper) |
 
 ## AI: what it does and doesn't do
 
@@ -238,9 +287,10 @@ a 30-day trend line. Add `stats` to `rotation` to include the page while the Kin
 ## How it works
 
 ```
-Kindle 4 (paper.sh)                         server (FastAPI + Pillow, one container)
-  key press ──► GET /ui.png?k=next&b=81 ──►  apply the press to the reader state, render 600×800 greyscale PNG
-  eips -g screen.png ◄──────────────────────  (≈30 ms; renders cached; feeds cached and refreshed in the background)
+Kindle (paper.sh)                           server (FastAPI + Pillow, one container)
+  key or tap ──► GET /ui.png?k=next&b=81 ──►  apply it to the reader state, render a greyscale PNG
+  eips / fbink screen.png ◄─────────────────  (≈30 ms; renders cached; feeds cached and refreshed in the background)
+  a touch Kindle adds &dev=758x1024&touch=1   the page is drawn at that size, with the navigation bar
   while you read: GET /ui.png?k=next&peek=1  draw the likely next screens without applying them
   asleep: GET /ui.png?k=auto hourly          the front page (or your rotation)
   hourly: GET /edition.mobi                  Calibre periodical of everything filed today
@@ -251,8 +301,10 @@ Kindle 4 (paper.sh)                         server (FastAPI + Pillow, one contai
 - `server/paper/pages.py` draws the pages, `ui.py` handles the interactive state and article layout, and
   `sources.py` fetches the feeds, weather and markets. `archive.py` stores the day's articles with full text (via
   trafilatura), `photos.py` dithers photos for e-ink, and `periodical.py` builds the `.mobi`.
-- `kindle/stop-press/paper.sh` is the whole device side: a key reader, a power-button watcher, the sleep and wake
-  loop, and prefetching.
+- `kindle/stop-press/paper.sh` is the whole device side: a key reader (or `touch.lua`, which turns a touch
+  screen's events into taps, swipes and holds using the Kindle's own Lua), a power-button watcher, the sleep and
+  wake loop, and prefetching. Pages are laid out on a 600×800 grid and drawn at the device's resolution, so one
+  set of page code serves every screen.
 
 Lessons from getting the Kindle 4's buttons working, for anyone adapting it:
 - `webreaderd` and `browserd` keep running after `framework stop` and grab the page keys, Home, Back and Menu.
@@ -263,6 +315,12 @@ Lessons from getting the Kindle 4's buttons working, for anyone adapting it:
   `pbpress` line instead.
 - There's no `setsid` or `nohup` on the K4. `(trap '' HUP; exec sh paper.sh) &` survives KUAL closing.
 - BusyBox 1.7 ash's `read` fails when a signal arrives, so the event loop retries instead of exiting.
+
+And from the Paperwhite:
+- The UI is stopped and started with `stop lab126_gui` / `start lab126_gui` (upstart), not `framework stop`.
+- The touch screen reports finger positions already in screen pixels on `/dev/input/event0`.
+- Its BusyBox has no `grep -E`, and `ping` hangs when nothing answers, so the Wi-Fi check needs an address that does.
+- Page turns use the GL16 waveform, highlights and ticking digits DU, and flashes GC16.
 
 ## Other devices
 
@@ -294,14 +352,15 @@ Tested at phone size in a desktop browser. If you try it on an e-reader, please 
 [device issue](https://github.com/OPISGUY/stop-press/issues/1), especially if something didn't work.
 
 **Native ports.** The full version (sleeping between refreshes, the saved copy, the daily edition) needs a device
-script like `kindle/stop-press/paper.sh`. It's written for the Kindle 4's keys. The plan for other models, and
-how to help, is in [the pinned issue](https://github.com/OPISGUY/stop-press/issues/1).
+script like `kindle/stop-press/paper.sh`, which covers the Kindle 4 and touch Kindles. Kobo and other e-readers
+are still to do: the plan, and how to help, is in [the pinned issue](https://github.com/OPISGUY/stop-press/issues/1).
 
 ## Credits
 
 - [kindle-dash](https://github.com/pascalw/kindle-dash) by Pascal Widdershoven (MIT) supplied the original
   sleep/wake idea and the `xh` and `next-wakeup` ARM binaries that `fetch-binaries.sh` downloads.
-- [FBInk](https://github.com/NiLuJe/FBInk) by NiLuJe (GPLv3) draws live mode's partial updates and the smart flash.
+- [FBInk](https://github.com/NiLuJe/FBInk) by NiLuJe (GPLv3) draws live mode's partial updates and the smart flash,
+  and everything on a touch Kindle.
   Stop Press only runs it; it isn't included here.
 - NiLuJe and the MobileRead community for the jailbreak, KUAL and USBNetwork.
 - Fonts under the SIL Open Font License: Source Serif 4, Playfair Display, Inter, UnifrakturMaguntia (licences in

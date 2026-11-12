@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 from paper import history, sources
 from paper.config import SETTINGS as S
-from paper.draw import DARK, INK, LIGHT, M, MID, PAPER, H, W, Page, font
+from paper.draw import DARK, INK, LIGHT, M, MID, PAPER, H, W, Page, current_device, font, scaled_font
 
 TITLES = {"front": "Front Page", "markets": "Markets", "world": "World", "stats": "Numbers", "day": "Your Day"}
 # The pages in the order the page keys step through them (and the footer lists them).
@@ -102,6 +102,7 @@ def battery_mark(p: Page, x_right: float, y: int):
 def header(p: Page, section: str) -> int:
     """Compact masthead for inside pages; returns the y where content starts."""
     p.text((M, 10), S.masthead, font("masthead", 30))
+    p.tap((0, 0, W / 2, 50), "view:front")
     f = font("sans", 12, 700)
     p.text((W - M, 14), section.upper(), f, anchor="ra")
     battery_mark(p, W - M - p.width(section.upper(), f) - 12, 15)
@@ -205,6 +206,7 @@ def front() -> Page:
     p.vrule(gx - 6, top, bottom_band - 10, fill=MID)
 
     yy = p.kicker(M, top, "Also today")
+    p.tap((M, top - 4, M + col_l_w, yy), "view:world")
     hf = font("head", 16, 700)
     for item in (world[1:] + (n.get("home") or []))[:6]:
         lines = p.wrap(item["title"], hf, col_l_w)[:2]
@@ -218,6 +220,7 @@ def front() -> Page:
         p.hot((M, y0, M + col_l_w, yy - 4), item)
 
     my = p.kicker(gx, top, "Markets")
+    p.tap((gx, top - 4, W - M, my), "view:markets")
     cw = W - M - gx
     for x in ([i for i in mk if i["symbol"] in S.front_markets] or mk)[:8]:
         if my + 32 > bottom_band - 10:
@@ -226,6 +229,7 @@ def front() -> Page:
         p.text((gx, my + 18), price(x), font("sans", 12, 400), DARK)
         p.sparkline((gx + 96, my + 6, gx + cw - 62, my + 26), x["series"][-20:], width=1, baseline=False)
         change(p, gx + cw, my + 16, x["change_pct"], size=13)
+        p.tap((gx, my - 2, W - M, my + 32), f"stock:{x['symbol']}")
         my += 36
 
     # Bottom band: Your day | your numbers (or technology)
@@ -237,6 +241,7 @@ def front() -> Page:
     p.vrule(vx - 8, y, H - 36, fill=MID)
 
     dy = p.kicker(M, y, "Your day")
+    p.tap((M, y - 4, vx - 10, H - 44), "view:day")
     events = sources.calendar()
     if events is None:
         if w:
@@ -261,6 +266,7 @@ def front() -> Page:
     st = [x for x in sources.stats() or [] if x["value"] is not None]
     if st:
         ay = p.kicker(vx, y, "At a glance")
+        p.tap((vx, y - 4, W - M, H - 44), "view:stats")
         for x in st[:3]:
             p.text((vx, ay + 1), p.fit(x["label"], font("sans", 12, 500), half - 110), font("sans", 12, 500), DARK)
             p.text((W - M, ay - 2), fmt_stat(x), font("head", 19, 800), anchor="ra")
@@ -286,14 +292,36 @@ DIGIT_FONT = ("sans", 26, 700)
 CELL_W, CELL_H = 17, 30  # one digit's slot; a cell is two
 
 
-def digit_cell(img, x: int, y: int, two: str):
-    """Two digits in fixed slots on white, drawn the same on the page and in the Kindle's digit set."""
+def cell_size(dev=None) -> tuple[int, int]:
+    """One two-digit cell in device pixels: (width, height)."""
+    s = (dev or current_device()).scale
+    return round(2 * CELL_W * s), round(CELL_H * s)
+
+
+def digit_cell(img, x: int, y: int, two: str, dev=None):
+    """Two digits in fixed slots on white at device pixel (x, y), drawn the same on the page and in the Kindle's
+    digit set (/atlas.tar), at the device's scale."""
     from PIL import ImageDraw
 
+    dev = dev or current_device()
+    w, h = cell_size(dev)
+    slot = w / 2
+    f = scaled_font(font(*DIGIT_FONT), dev.scale)
+    if dev.mxc:
+        # Pure black and white, no grey edges: the Kindle ticks these with its fast 1-bit update (DU), which
+        # can only drive a pixel to black or white.
+        from PIL import Image
+
+        cell = Image.new("L", (w, h), PAPER)
+        d = ImageDraw.Draw(cell)
+        for i, ch in enumerate(two):
+            d.text((i * slot + slot / 2, h / 2), ch, font=f, fill=INK, anchor="mm")
+        img.paste(cell.point(lambda v: 0 if v < 140 else 255), (x, y))
+        return
     d = ImageDraw.Draw(img)
-    d.rectangle([x, y, x + 2 * CELL_W - 1, y + CELL_H - 1], fill=PAPER)
+    d.rectangle([x, y, x + w - 1, y + h - 1], fill=PAPER)
     for i, ch in enumerate(two):
-        d.text((x + i * CELL_W + CELL_W / 2, y + CELL_H / 2), ch, font=font(*DIGIT_FONT), fill=INK, anchor="mm")
+        d.text((x + i * slot + slot / 2, y + h / 2), ch, font=f, fill=INK, anchor="mm")
 
 
 def _cells(p: Page, view: str, x: int, yy: int, target: datetime | None) -> int:
@@ -308,8 +336,9 @@ def _cells(p: Page, view: str, x: int, yy: int, target: datetime | None) -> int:
     x0 = x
     cells = []
     for i, v in enumerate(parts):
-        digit_cell(p.img, x, yy, f"{v:02d}")
-        cells.append(("hms"[i], x, yy))
+        rx, ry = (round(c) for c in p.dev.pt(x, yy))  # the Kindle stamps cells in device pixels
+        digit_cell(p.img, rx, ry, f"{v:02d}", p.dev)
+        cells.append(("hms"[i], rx, ry))
         x += 2 * CELL_W
         if i < 2:
             p.text((x + colon / 2, yy + CELL_H / 2 - 2), ":", font(*DIGIT_FONT), INK, anchor="mm")
@@ -359,49 +388,107 @@ def bell_ticker(p: Page, view: str, y: int, exchange: str, sub: str = ""):
 
 # --- Markets ------------------------------------------------------------------------------------
 
-MARKET_ROWS = 13
+GROUPS = ("Indices", "AI & tech", "Shares", "Currencies, crypto & commodities")
+MARKET_TOP, MARKET_BOTTOM = 134, 760  # where the rows start (after the column heads) and must end
+ROW_H, GROUP_H, FUTURES_H = 40, 27, 30
 KIND_LABEL = {"index": "Index", "fx": "Currency", "crypto": "Crypto", "commodity": "Commodity", "stock": "Share",
               "fund": "Fund"}
+US_SESSION = {"REGULAR": "New York open", "PRE": "US pre-market", "PREPRE": "US closed · overnight",
+              "POST": "US after hours", "POSTPOST": "US closed", "CLOSED": "US closed"}
+
+
+def _market_group(x: dict) -> str:
+    if x.get("tech"):
+        return GROUPS[1]
+    return GROUPS[0] if x.get("kind") == "index" else GROUPS[2] if x.get("kind") in ("stock", "fund") else GROUPS[3]
+
+
+def _market_layout(mk: list[dict]) -> list[list[tuple[str, object]]]:
+    """The watchlist in its groups, cut into pages: each a list of ("head", title) and ("row", instrument).
+    The first page starts lower, under the futures strip."""
+    out, cur, y = [], [], MARKET_TOP + FUTURES_H
+    for g in GROUPS:
+        for i, x in enumerate(r for r in mk if _market_group(r) == g):
+            head = g if i == 0 else None
+            if cur and y + ROW_H + (GROUP_H if head else 0) > MARKET_BOTTOM:
+                out.append(cur)
+                cur, y, head = [], MARKET_TOP, g if i == 0 else f"{g} · continued"
+            if head:
+                cur.append(("head", head))
+                y += GROUP_H
+            cur.append(("row", x))
+            y += ROW_H
+    return out + [cur] if cur or not out else out
 
 
 def markets_pages() -> int:
-    return max(1, -(-len(sources.markets() or []) // MARKET_ROWS))
+    return len(_market_layout(sources.markets() or []))
 
 
 def markets(ipage: int = 0) -> Page:
-    """The watchlist, a page at a time. Each row opens that instrument's own screen."""
+    """The watchlist in groups, a page at a time, with what each is doing outside its session (pre-market or
+    after hours). Each row opens that instrument's own screen."""
     p = Page()
     y = header(p, "Markets")
     mk = sources.markets() or []
-    pages = markets_pages()
+    layout = _market_layout(mk)
+    pages = len(layout)
     ipage = max(0, min(ipage, pages - 1))
-    state = next((x["market_state"] for x in mk if x["symbol"] == S.lead_market), "")
-    sub = {"REGULAR": "Markets open", "CLOSED": "Closed · last prices", "PRE": "Pre-market"}.get(state, "Latest prices")
+    us = next((x.get("market_state") or "" for x in mk if x.get("kind") == "stock" and x.get("currency") == "USD"), "")
     LIVE.pop("markets", None)
     y = section_title(p, y, "Markets")
-    bell_ticker(p, "markets", y - 50, _main_exchange(), f"{sub} · page {ipage + 1} of {pages}")
+    bell_ticker(p, "markets", y - 50, _main_exchange(), f"{US_SESSION.get(us, 'Latest prices')} · page {ipage + 1} of {pages}")
 
+    if ipage == 0:  # where New York is heading: index futures
+        p.d.rectangle([M - 4, y - 2, W - M + 4, y + FUTURES_H - 8], fill=INK)
+        mid = y + (FUTURES_H - 10) / 2
+        p.text((M + 4, mid), "US FUTURES", font("sans", 11, 700), PAPER, anchor="lm")
+        fut = sources.futures()
+        if not fut:
+            p.text((W - M - 4, mid), "no quotes just now", font("sans", 12, 400), PAPER, anchor="rm")
+        for i, (name, pct) in enumerate(fut[:3]):
+            x1 = 290 + i * 145
+            s = f"{'▲' if pct >= 0 else '▼'} {abs(pct):.2f}%"
+            f = font("sans", 13, 700)
+            p.text((x1, mid), s, f, PAPER, anchor="rm")
+            p.text((x1 - p.width(s, f) - 7, mid), name, font("sans", 12, 400), PAPER, anchor="rm")
+        y += FUTURES_H
+
+    kinds = {x["ext"]["kind"] for x in mk if x.get("ext")}
     hf = font("sans", 11, 700)
     p.text((M, y), "INSTRUMENT", hf, MID)
-    p.text((330, y), "PRICE", hf, MID, anchor="ra")
-    p.text((420, y), "DAY", hf, MID, anchor="ra")
+    p.text((312, y), "PRICE", hf, MID, anchor="ra")
+    p.text((388, y), "DAY", hf, MID, anchor="ra")
+    p.text((478, y), "PRE-MARKET" if "pre" in kinds else "AFTER HOURS" if "post" in kinds else "OUT OF HOURS",
+           hf, INK if kinds else MID, anchor="ra")
     p.text((W - M, y), "30 DAYS", hf, MID, anchor="ra")
     y += 18
-    row = 44
-    for i, x in enumerate(mk[ipage * MARKET_ROWS:(ipage + 1) * MARKET_ROWS]):
-        if i % 2 == 0:
-            p.d.rectangle([M - 4, y, W - M + 4, y + row - 2], fill=242)
-        mid = y + row / 2
-        p.text((M, mid - 9), x["name"], font("sans", 16, 700), anchor="lm")
+    n = 0
+    for what, x in layout[ipage] if layout else []:
+        if what == "head":
+            p.rule(y + 2, fill=INK)
+            p.kicker(M, y + 7, x)
+            y += GROUP_H
+            n = 0
+            continue
+        if n % 2 == 0:
+            p.d.rectangle([M - 4, y, W - M + 4, y + ROW_H - 2], fill=242)
+        n += 1
+        mid = y + ROW_H / 2
+        p.text((M, mid - 8), x["name"], font("sans", 15, 700), anchor="lm")
         sub = KIND_LABEL.get(x["kind"], "") + f" · {x['symbol']}"
         if x.get("month_pct") is not None:
             sub += f" · {x['month_pct']:+.1f}% 1m"
-        p.text((M, mid + 10), sub, font("sans", 11, 400), DARK, anchor="lm")
-        p.text((330, mid), price(x), font("sans", 17, 600), anchor="rm")
-        change(p, 420, mid, x["change_pct"], size=15)
-        p.sparkline((440, y + 8, W - M, y + row - 10), x["series"], width=2)
-        p.hot((M, y, W - M, y + row - 2), {"link": f"stock:{x['symbol']}", "title": x["name"]}, tick=False)
-        y += row
+        p.text((M, mid + 9), sub, font("sans", 10, 400), DARK, anchor="lm")
+        p.text((312, mid), price(x), font("sans", 16, 600), anchor="rm")
+        change(p, 388, mid, x["change_pct"], size=14)
+        ext = x.get("ext")
+        if ext:
+            change(p, 478, mid - 8, ext.get("pct"), size=13)
+            p.text((478, mid + 9), price({**x, "price": ext["price"]}), font("sans", 10, 400), DARK, anchor="rm")
+        p.sparkline((494, y + 8, W - M, y + ROW_H - 9), x["series"], width=2)
+        p.hot((M, y, W - M, y + ROW_H - 2), {"link": f"stock:{x['symbol']}", "title": x["name"]}, tick=False)
+        y += ROW_H
 
     # Room left on the last page: business headlines
     if ipage == pages - 1 and y < H - 120:
@@ -483,6 +570,7 @@ def stock(symbol: str, rng: str = "1M") -> Page:
         if on:
             p.d.rectangle([tx, y - 2, tx + w, y + 20], fill=INK)
         p.text((tx + 8, y + 9), t, f, PAPER if on else DARK, anchor="lm")
+        p.tap((tx - 3, y - 14, tx + w + 3, y + 32), f"range:{t}")
         tx += w + 6
     if d.get("range_pct") is not None:
         p.text((W - M, y + 9), f"{d['range_pct']:+.1f}% over {rng}", font("sans", 13, 700), anchor="rm")
