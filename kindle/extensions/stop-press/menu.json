@@ -20,8 +20,18 @@
 					"action": "echo paper > /mnt/us/stop-press/mode && /mnt/us/stop-press/paper-start.sh"
 				},
 				{
-					"name": "Get today's edition now",
+					"name": "Standalone: paper kept on the Kindle, Wi-Fi off",
 					"priority": 4,
+					"action": "echo standalone > /mnt/us/stop-press/source && /mnt/us/stop-press/paper-start.sh"
+				},
+				{
+					"name": "Server: every tap asks the server",
+					"priority": 5,
+					"action": "echo server > /mnt/us/stop-press/source && /mnt/us/stop-press/paper-start.sh"
+				},
+				{
+					"name": "Get today's edition now",
+					"priority": 6,
 					"action": "sh /mnt/us/stop-press/edition-now.sh",
 					"exitmenu": false,
 					"status": false,
@@ -29,7 +39,7 @@
 				},
 				{
 					"name": "Start at boot: on",
-					"priority": 5,
+					"priority": 7,
 					"action": "sh /mnt/us/stop-press/autostart.sh on",
 					"exitmenu": false,
 					"status": false,
@@ -37,7 +47,7 @@
 				},
 				{
 					"name": "Start at boot: off",
-					"priority": 6,
+					"priority": 8,
 					"action": "sh /mnt/us/stop-press/autostart.sh off",
 					"exitmenu": false,
 					"status": false,

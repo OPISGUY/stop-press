@@ -13,18 +13,34 @@
 #           reached (the Wi-Fi drops as soon as you leave the room) the keys flip through that copy instead.
 #   Live:   plugged in (or above 20% battery) and with FBInk installed, it can instead stay awake and keep the
 #           page live: prices and countdowns update in place, with no page flashes. Home pressed twice switches.
+#   Standalone (touch Kindles): instead of asking the server for every screen, fetch the whole paper once an
+#           hour (/bundle.tar) and answer every tap from the Kindle's own storage, with Wi-Fi off in between.
+#           The STANDALONE / SERVER switch at the top of the screen changes over; see "standalone mode" below.
 #   The keyboard key hands the Kindle back to its normal library.
 DIR=/mnt/us/stop-press
 . "$DIR/env.sh"
 XH="$DIR/xh"
 CA="$DIR/cacert.pem"
+# The full certificate list costs about 3.5 s of CPU per HTTPS request on a Paperwhite. cacert-fast.pem holds
+# only the few roots Azure and Yahoo use, and takes 0.25 s. If a fetch fails with it, ca_full goes back to the
+# full list for the rest of the run (your server may use another certificate authority).
+[ -s "$DIR/cacert-fast.pem" ] && CA="$DIR/cacert-fast.pem"
+server_up() { "$XH" -d -q --timeout 5 --verify "$CA" -o /tmp/ca.test get "$(url healthz)" >/dev/null 2>&1; }
+ca_full() { # after a failed fetch: true (and switched) only if the full list works where the short one doesn't
+  [ "$CA" != "$DIR/cacert.pem" ] || return 1
+  server_up && return 1 # (just a blip)
+  "$XH" -d -q --timeout 5 --verify "$DIR/cacert.pem" -o /tmp/ca.test get "$(url healthz)" >/dev/null 2>&1 || return 1 # (offline)
+  server_up && return 1 # (and checked again: the network may simply have come back in between)
+  CA="$DIR/cacert.pem"
+  log "your server's certificate isn't in cacert-fast.pem: using the full cacert.pem from now on"
+}
 # xh ignores --verify for plain http:// addresses and loads the Kindle's own certificate bundle, which it
 # can't read, so every fetch to a server on your home network would fail. Point it at ours instead.
 export SSL_CERT_FILE="$DIR/cacert.pem"
 EIPS=/usr/sbin/eips
 RTC=/sys/devices/platform/mxc_rtc.0/wakeup_enable
 FIFO=/tmp/paper.fifo
-IDLE=180
+IDLE=${PAPER_IDLE:-180} # seconds awake after the last press (server mode)
 BOOK="$DIR/offline"
 OFFLINE=0
 # FBInk draws one box of the screen at a time; live mode and the smart flash need it, and so do touch Kindles.
@@ -133,7 +149,8 @@ modeq() {
 
 # Ask the server for the screen after key $1 into file $2 ($3: extra query, e.g. &peek=1). Sends the battery level.
 fetch() {
-  "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI$(modeq)&k=$1${BATT:+&b=$BATT}$3$TAPQ" 2>/dev/null && mv "$2.part" "$2"
+  "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI$(modeq)&k=$1${BATT:+&b=$BATT}$3$TAPQ" 2>/dev/null && mv "$2.part" "$2" && return 0
+  ca_full && "$XH" -d -q --timeout 12 --verify "$CA" -o "$2.part" get "$UI$(modeq)&k=$1${BATT:+&b=$BATT}$3$TAPQ" 2>/dev/null && mv "$2.part" "$2"
 }
 
 # Page draws. Waking up and the hourly page flash the whole screen ($2 = clean). For page turns the server decides
@@ -358,7 +375,7 @@ _show() {
     fetch "$1" /tmp/ui.png || fetch "$1" /tmp/ui.png || log "commit failed for $1"
     # (a tap drawn from a guess: if the server's answer differs, that's the truth)
     if [ "$1" = tap ] && ! cmp -s /tmp/pre.tap.png /tmp/ui.png; then draw /tmp/ui.png "$2"; fi
-  elif fetch "$1" /tmp/ui.png; then
+  elif fetch "$1" /tmp/ui.png || { sleep 5; fetch "$1" /tmp/ui.png; }; then # (Wi-Fi is often slow just after a wake)
     draw /tmp/ui.png "$2"
   else
     log "fetch failed for $1"
@@ -374,6 +391,266 @@ _show() {
   if [ "$3" != noprefetch ]; then
     prefetch &
     PREFETCH=$!
+  fi
+}
+
+# --- standalone mode ------------------------------------------------------------------------------
+# The file source says "standalone" or "server" (the default). In standalone mode the Kindle holds the paper
+# itself: $SA/s/<screen>.png and beside each a .map of what a tap on it does (the server's bundle.py makes them).
+# A tap is looked up in the map of the screen that's showing and the next screen is drawn straight from storage:
+# no Wi-Fi, no waiting. Wi-Fi is switched on only to fetch the next hourly bundle, and for the live board.
+SA="$DIR/bundle"
+SRC=server
+[ "$INPUT" = touch ] && [ "$(cat "$DIR/source" 2>/dev/null)" = standalone ] && SRC=standalone
+SA_IDLE=${STANDALONE_IDLE:-90} # seconds awake after the last tap (waking again costs nothing here)
+INK_FLASH=6                    # flash a turn once the screens drawn since the last flash add up to this
+SALIVE=
+pkill -f "$DIR/live.lua" 2>/dev/null # (a board left over from before a restart)
+
+# Wi-Fi on (and wait for it) or off. STANDALONE_WIFI=on in env.sh keeps it on, e.g. to reach the Kindle by SSH.
+wifi() {
+  if [ "$1" = on ]; then
+    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+    wn=0
+    until ping -c 1 "$WIFI_TEST_IP" >/dev/null 2>&1 || [ $wn -ge 40 ]; do
+      wn=$((wn + 1))
+      sleep 1
+    done
+    [ $wn -lt 40 ]
+  elif [ "$STANDALONE_WIFI" != on ]; then
+    lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+  fi
+}
+
+# Fetch a fresh bundle into $SA (unpacked beside the old one and swapped in whole). The server answers 202 with
+# no bundle while it is building one, so ask again for up to three minutes. Leaves Wi-Fi on.
+sa_sync() {
+  t0=$(date +%s)
+  if ! wifi on; then
+    log "bundle: no Wi-Fi"
+    return 1
+  fi
+  BATT=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+  burl="$(url bundle.tar)$DEVQ${BATT:+&b=$BATT}"
+  got=
+  tries=0
+  fails=0
+  while [ $tries -lt 18 ] && [ $fails -lt 3 ]; do
+    if "$XH" -d -q --timeout 120 --verify "$CA" -o "$DIR/bundle.tar.part" get "$burl" 2>/dev/null; then
+      rm -rf "$SA.new"
+      mkdir -p "$SA.new"
+      if tar -xf "$DIR/bundle.tar.part" -C "$SA.new" 2>/dev/null && [ -s "$SA.new/meta.txt" ] && [ -s "$SA.new/s/front.png" ]; then
+        got=1
+        break
+      fi
+    else
+      ca_full || fails=$((fails + 1))
+    fi
+    tries=$((tries + 1))
+    sleep 10
+  done
+  rm -f "$DIR/bundle.tar.part"
+  if [ -z "$got" ]; then
+    rm -rf "$SA.new"
+    log "bundle: fetch failed after $(($(date +%s) - t0))s"
+    return 1
+  fi
+  rm -rf "$SA"
+  mv "$SA.new" "$SA"
+  date +%s >"$DIR/state/bundle-fetched"
+  log "bundle saved in $(($(date +%s) - t0))s: $(sed -n 's/^screens //p' "$SA/meta.txt") screens, edition $(sed -n 's/^stamp //p' "$SA/meta.txt"), battery ${BATT:-?}%"
+}
+
+# Draw screen $1 from the bundle ($2 = flash). Turns don't flash until enough ink has changed since the last one.
+sa_show() {
+  [ -s "$SA/s/$1.png" ] || return 1
+  inkw=$(sed -n 's/^ink //p' "$SA/s/$1.map" 2>/dev/null)
+  INKSUM=$((${INKSUM:-0} + ${inkw:-3}))
+  lock
+  if [ "$2" = flash ] || [ "$INKSUM" -ge "$INK_FLASH" ]; then
+    put "$SA/s/$1.png" flash
+    INKSUM=0
+  else
+    put "$SA/s/$1.png"
+  fi
+  unlock
+  SCR=$1
+  ARMED=
+}
+
+# Go to a target from a map: a screen, @back, !live or !server. $2: the line's flags (b = remember where we were).
+sa_go() {
+  case "$1" in
+    "!live") sa_live; return ;;
+    "!server") to_server; return ;;
+    "@back") sa_show "${BACK:-front}" || sa_show front; return ;;
+  esac
+  case "$2" in *b*) BACK=$SCR ;; esac
+  sa_show "$1" || sa_show front
+}
+
+# Frame the box "$1 $2 $3 $4" (x0 y0 x1 y1): four bars drawn inverted, the quick way. sa_unframe puts it back.
+sa_frame() {
+  set -- $1
+  fw=$(($3 - $1)); fh=$(($4 - $2))
+  lock
+  "$FBINK" -q -h -W DU -s "top=$2,left=$1,width=$fw,height=6" 2>/dev/null
+  "$FBINK" -q -h -W DU -s "top=$(($4 - 6)),left=$1,width=$fw,height=6" 2>/dev/null
+  "$FBINK" -q -h -W DU -s "top=$2,left=$1,width=6,height=$fh" 2>/dev/null
+  "$FBINK" -q -h -W DU -s "top=$2,left=$(($3 - 6)),width=6,height=$fh" 2>/dev/null
+  unlock
+}
+sa_unframe() {
+  [ -n "$ARMED" ] || return 0
+  set -- $ARMED
+  lock
+  "$FBINK" -q -W GL16 -s "top=$2,left=$1,width=$(($3 - $1)),height=$(($4 - $2))" 2>/dev/null
+  unlock
+  ARMED=
+}
+
+# A tap at $1 $2: the first box in this screen's map that holds it. Boxes flagged f are framed by the first tap
+# and opened by the second, as in server mode.
+sa_tap() {
+  hit=
+  while read -r kind a b c d tgt fl; do
+    [ "$kind" = tap ] || continue
+    if [ "$1" -ge "$a" ] && [ "$1" -lt "$c" ] && [ "$2" -ge "$b" ] && [ "$2" -lt "$d" ]; then
+      hit=1
+      break
+    fi
+  done <"$SA/s/$SCR.map"
+  if [ -z "$hit" ]; then
+    sa_unframe
+    unack
+    return
+  fi
+  case "$fl" in
+    *f*)
+      if [ "$ARMED" = "$a $b $c $d" ]; then
+        sa_go "$tgt" "$fl"
+      else
+        sa_unframe
+        unack
+        ARMED="$a $b $c $d"
+        sa_frame "$ARMED"
+      fi ;;
+    *) sa_go "$tgt" "$fl" ;;
+  esac
+}
+
+sa_key() {
+  t=$(sed -n "s/^key $1 //p" "$SA/s/$SCR.map" 2>/dev/null)
+  [ -n "$t" ] && sa_go "$t"
+}
+
+# Fetch a fresh edition now (swipe down on the front page, or KUAL).
+sa_refresh() {
+  lock
+  note "Fetching a fresh edition - about a minute..."
+  unlock
+  if sa_sync; then
+    wifi off
+    BACK=
+    sa_show front flash
+  else
+    wifi off
+    lock
+    note "Couldn't reach the server - still the $(sed -n 's/^stamp //p' "$SA/meta.txt" 2>/dev/null) edition"
+    unlock
+  fi
+}
+
+# The live board: live.lua fetches each price itself and prints the board, with no server at all. A test bed:
+# it logs how long every fetch and draw takes. Any tap ends it.
+sa_live() {
+  if [ "$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)" != 1 ] &&
+    [ "$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null || echo 0)" -le 20 ]; then
+    lock
+    note "LIVE MODE needs charger or 20% battery" up
+    unlock
+    return
+  fi
+  echo live >"$DIR/mode"
+  disarm_idle
+  lock
+  note "LIVE MODE - connecting..." up
+  unlock
+  wifi on
+  pkill -f "$DIR/live.lua" 2>/dev/null # (one board at a time: two would share /tmp/salive and mix up prices)
+  lua "$DIR/live.lua" "$SA/live/symbols.txt" "$FBINK" "$XH" "$CA" /tmp/salive &
+  SALIVE=$! # (its own name: LIVEPID belongs to server live mode, and other code clears it)
+  log "standalone live board"
+}
+sa_live_stop() {
+  [ -n "$SALIVE" ] || return 0
+  kill "$SALIVE" 2>/dev/null
+  pkill -f "$DIR/live.lua" 2>/dev/null # (started from a subshell, e.g. on waking, its pid isn't ours to know)
+  SALIVE=
+  echo paper >"$DIR/mode"
+  wifi off
+  log "standalone live board off"
+  sa_show "${SCR:-front}" flash
+}
+
+# One touch event in standalone mode.
+sa_event() {
+  if [ -n "$SALIVE" ]; then
+    if [ "$1" = hold ] && [ "$3" -lt $((SW / 5)) ] && [ "$4" -lt $((SH / 6)) ]; then exit_to_library; fi
+    sa_live_stop
+    return
+  fi
+  case "$1" in
+    tap)
+      ack "$3" "$4"
+      sa_tap "$3" "$4" ;;
+    swipe)
+      sa_unframe
+      case "$2" in
+        left) sa_key next ;;
+        right) sa_key prev ;;
+        down) if [ "$SCR" = front ]; then sa_refresh; else sa_key home; fi ;;
+        up) sa_key menu ;;
+      esac ;;
+    hold)
+      if [ "$3" -lt $((SW / 5)) ] && [ "$4" -lt $((SH / 6)) ]; then exit_to_library; else sa_live; fi ;;
+  esac
+}
+
+# Change over. To the server: Wi-Fi on, and every tap is asked of the server again. To standalone: fetch the
+# paper, then Wi-Fi off.
+to_server() {
+  sa_live_stop >/dev/null 2>&1
+  echo server >"$DIR/source"
+  SRC=server
+  log "server mode"
+  lock
+  note "SERVER MODE - connecting..." up
+  unlock
+  wifi on
+  show none clean
+  start_live
+}
+to_standalone() {
+  stop_live
+  stop_prefetch
+  [ -n "$SETTLE" ] && kill "$SETTLE" 2>/dev/null
+  lock
+  note "STANDALONE - fetching the paper (about a minute)..." up
+  unlock
+  if sa_sync || [ -s "$SA/s/front.png" ]; then
+    echo standalone >"$DIR/source"
+    echo paper >"$DIR/mode"
+    SRC=standalone
+    OFFLINE=0
+    wifi off
+    BACK=
+    log "standalone mode"
+    sa_show front flash
+  else
+    lock
+    note "Couldn't fetch the paper - staying in server mode" up
+    unlock
   fi
 }
 
@@ -411,9 +688,11 @@ offline_draw() {
 go_offline() {
   log "offline"
   OFFLINE=1
+  OFF_AT=$(date +%s)
   OPAGE=$(cat /tmp/bookpos 2>/dev/null)
   case "$1" in home | auto | menu) OPAGE=1 ;; esac
-  [ -s "$BOOK/$(printf 'p%03d.png' "${OPAGE:-1}" 2>/dev/null)" ] || OPAGE=1
+  case "$OPAGE" in "" | 0 | *[!0-9]*) OPAGE=1 ;; esac # (/tmp/bookpos can be empty or junk)
+  [ -s "$BOOK/$(printf 'p%03d.png' "$OPAGE")" ] || OPAGE=1
   offline_draw
 }
 
@@ -524,9 +803,11 @@ disarm_idle() {
 
 arm_idle() {
   disarm_idle
-  [ -n "$LIVEPID" ] && return # live: stay awake
+  [ -n "$LIVEPID$SALIVE" ] && return # live: stay awake
   GEN=$(($(date +%s) % 100000 * 10 + ${GEN:-0} % 10 + 1)) # tags this timer, so a stale one can't put us to sleep
-  (sleep $IDLE && echo "idle $GEN $(date +%s)" >$FIFO) &
+  idle=$IDLE
+  [ "$SRC" = standalone ] && idle=$SA_IDLE
+  (sleep $idle && echo "idle $GEN $(date +%s)" >$FIFO) &
   TIMER=$!
 }
 
@@ -560,8 +841,20 @@ toggle_mode() {
 interactive() {
   log "awake"
   entered=$(date +%s)
-  note "Waking up - one moment..."
   OFFLINE=0
+  if [ "$SRC" = standalone ] && [ ! -s "$SA/s/front.png" ]; then # first time: there is no paper here yet
+    note "Fetching the paper - about a minute..."
+    sa_sync || { SRC=server; log "no bundle: server mode for now"; }
+    [ "$SRC" = standalone ] && wifi off
+  fi
+  if [ "$SRC" = standalone ]; then
+    [ -s "$SA/s/${SCR:-front}.png" ] || SCR=front
+    sa_show "${SCR:-front}" flash
+    ready=$(date +%s)
+    [ "$(cat "$DIR/mode" 2>/dev/null)" = live ] && sa_live
+    arm_idle
+  else
+  note "Waking up - one moment..."
   # After a suspend Wi-Fi takes a few seconds. Out of range, give up sooner and use the offline copy.
   n=0
   until ping -c 1 "$WIFI_TEST_IP" >/dev/null 2>&1 || [ $n -ge 12 ]; do
@@ -572,6 +865,7 @@ interactive() {
   ready=$(date +%s) # power presses before the page appears are impatience, not "go to sleep"
   start_live
   arm_idle
+  fi
   while true; do
     # BusyBox 1.7 ash's read fails when a signal lands (e.g. the idle timer we just killed); just read again.
     read -r ev code at a4 a5 <&3 || continue
@@ -583,11 +877,27 @@ interactive() {
     esac
     # Ignore anything queued before we woke (keys hit while asleep).
     [ "${at:-0}" -lt "$entered" ] && continue
+    if [ "$SRC" = standalone ]; then
+      case "$ev" in
+        tap | swipe | hold)
+          log "$ev $code ${tx:+at $tx $ty} on ${SCR:-?}"
+          sa_event "$ev" "$code" "$tx" "$ty"
+          arm_idle
+          continue ;;
+        liveoff)
+          sa_live_stop
+          arm_idle
+          continue ;;
+      esac
+    fi
     case "$ev" in
       tap)
         log "tap $tx $ty"
         arm_idle
-        if [ "$OFFLINE" = 1 ]; then
+        if [ "$OFFLINE" = 1 ] && [ $(($(date +%s) - ${OFF_AT:-0})) -ge 20 ] && server_up; then
+          log "server back"
+          press home full # (Wi-Fi drops for a minute now and then: don't stay offline once it's back)
+        elif [ "$OFFLINE" = 1 ]; then
           # No server to ask what was tapped: the left third goes back a page, the top strip retries the server.
           if [ "$ty" -lt $((SH / 13)) ]; then press home full
           elif [ "$tx" -lt $((SW / 3)) ]; then press prev full
@@ -623,6 +933,10 @@ interactive() {
             toggle_mode quiet
             show none full
           fi
+          if grep -q stoppress-standalone /tmp/ui.png 2>/dev/null; then
+            to_standalone
+            arm_idle
+          fi
         fi ;;
       swipe)
         log "swipe $code"
@@ -640,8 +954,10 @@ interactive() {
         if [ "$tx" -lt $((SW / 5)) ] && [ "$ty" -lt $((SH / 6)) ]; then exit_to_library; else toggle_mode; fi ;;
       idle)
         [ "$code" = "$GEN" ] || continue
+        [ -n "$SALIVE" ] && continue # (a timer from before the live board started: the board keeps us awake)
         log "idle, going to sleep"; disarm_idle; sweep; return ;;
       liveoff)
+        sa_live_stop # (the standalone board stops itself at 20% battery)
         LIVEPID=; arm_idle ;; # back to sleeping after 3 idle minutes
       power)
         [ "$at" -lt $((ready + 2)) ] && continue # the press that woke us, or a repeat while waking
@@ -694,13 +1010,26 @@ fetch_edition() {
 # Show the scheduled page, then suspend until the next refresh. Returns when the power button wakes us.
 asleep() {
   log "asleep"
+  sa_live_stop >/dev/null 2>&1
   stop_live
   stop_prefetch
   rm -f /tmp/pre.*.png
+  stale=3300
   while true; do
     secs=$("$DIR/next-wakeup" --schedule="$REFRESH_SCHEDULE" --timezone="$TIMEZONE")
     if [ "$secs" -gt 3600 ]; then
       put "$DIR/sleeping.png" flash # overnight
+    elif [ "$SRC" = standalone ]; then
+      # Woken on schedule: fetch the next bundle and show its front page. Just put down (the first time round):
+      # only if the bundle is nearly an hour old; otherwise the page you were on stays, as a book's does.
+      if [ $(($(date +%s) - $(cat "$DIR/state/bundle-fetched" 2>/dev/null || echo 0))) -ge "${stale:-3300}" ]; then
+        if sa_sync; then
+          fetch_edition
+          BACK=
+          sa_show front flash
+        fi
+        wifi off
+      fi
     else
       "$DIR/wait-for-wifi.sh" "$WIFI_TEST_IP" >/dev/null 2>&1
       if show auto clean noprefetch; then
@@ -708,6 +1037,7 @@ asleep() {
         fetch_offline
       fi
     fi
+    stale=600
     sleep 3 # let the screen settle
     echo 0 >$RTC
     echo -n "$secs" >$RTC
@@ -742,6 +1072,8 @@ exit_to_library() {
   disarm_idle
   stop_live
   stop_prefetch
+  [ "$SRC" = standalone ] && lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+  pkill -f "$DIR/live.lua"
   pkill -f "tail -n 0 -f /var/log/messages"
   pkill -f "dd if=/dev/input/event"
   pkill -f "$DIR/touch.lua"
@@ -761,12 +1093,13 @@ if [ "$INPUT" = touch ] && [ -z "$FBINK" ]; then
   log "no FBInk found: touch Kindles need it (it comes with NiLuJe's USBNetwork package)"
   exit 1
 fi
-log "device: $INPUT, ${SW}x${SH}, fbink ${FBINK:-none}"
+log "device: $INPUT, ${SW}x${SH}, fbink ${FBINK:-none}, $SRC mode"
 trap '' TERM # stopping the Kindle UI also signals whatever KUAL launched, which includes us
 ui_stop
 trap - TERM
 lipc-set-prop com.lab126.powerd preventScreenSaver 1
 start_readers
+[ "$SRC" = standalone ] && [ -s "$SA/s/front.png" ] && wifi off
 while true; do
   interactive
   asleep
